@@ -1,0 +1,59 @@
+# Core LLM & API
+mistralai
+langchain
+langchain-core
+langchain-community
+
+# Embeddings
+sentence-transformers
+huggingface-hub
+
+# Vector Database
+faiss-cpu
+chromadb
+
+# Document Loaders
+pypdf
+python-docx
+unstructured
+
+# Text Processing
+tiktoken
+
+# Environment Variables
+python-dotenv
+
+# Backend (API)
+fastapi
+uvicorn
+
+# Frontend (Optional UI)
+streamlit
+
+# Utilities
+numpy
+pandas
+
+# File Handling
+aiofiles
+
+# Logging & Debugging
+loguru
+
+# HTTP Requests
+requests
+
+# Async Support
+httpx
+
+# Optional (better performance)
+scikit-learn
+
+# Optional (for advanced RAG pipelines)
+rank-bm25
+
+# Optional (for evaluation)
+ragas
+
+# Optional (if using OpenAI format compatibility)
+openai
