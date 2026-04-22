@@ -3,7 +3,8 @@ from modules.advicor import get_finance_advice
 import os
 
 # 1. Path to your statement
-pdf_path = "data/statement.pdf"
+pdf_path = "./data/statement.pdf"
+# C:\viva\Projects_New\RAG\Finance_Project\data\statement.pdf
 
 print("--- Step 1: Processing PDF ---")
 process_pdf_to_chroma(pdf_path)
