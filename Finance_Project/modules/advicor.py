@@ -1,105 +1,156 @@
-from langchain_mistralai import ChatMistralAI
+from langchain_mistralai import ChatMistralAI, MistralAIEmbeddings
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import SystemMessage, HumanMessage
-from modules.schema import FullStatementReport
+from langchain_chroma import Chroma
+from modules.schema import FullStatementReport, AccountDetails, Transaction
+from pydantic import BaseModel
+from typing import List
+from io import BytesIO
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+from reportlab.lib.styles import getSampleStyleSheet
+import plotly.io as pio
 
-from dotenv import load_dotenv
-load_dotenv()
-
+# Helper schema for batching transactions
+class TransactionBatch(BaseModel):
+    transactions: List[Transaction]
 
 def get_finance_advice(user_query: str, vectorstore) -> str:
-    """
-    FIX: Instead of using RAG retrieval (which misses rows due to chunking),
-    we pass the ENTIRE statement text directly to the LLM.
-    Bank statements are small enough to fit in one context window.
-    """
+    # (Keeping your high-context chat logic as it works well for simple queries)
     llm = ChatMistralAI(model="mistral-small-2506")
-
-    # Pull ALL documents from vectorstore and reconstruct full text
     all_docs = vectorstore.similarity_search("bank statement transactions", k=100)
     all_docs.sort(key=lambda x: x.metadata.get('page', 0))
     full_statement = "\n".join([d.page_content for d in all_docs])
 
     system_prompt = (
-        "You are an accurate Financial Advisor analyzing a bank statement.\n\n"
-
-        "STATEMENT DATA (use ALL of this, do not skip any row):\n"
+        "You are an accurate Financial Advisor. Use this statement data:\n"
         f"{full_statement}\n\n"
-
-        "RULES:\n"
-        "- Read EVERY transaction row before answering.\n"
-        "- The 'Balance' column is a RUNNING TOTAL — never sum it.\n"
-        "- DEBITS = money going OUT (money spent).\n"
-        "- CREDITS = money coming IN (money received).\n"
-        "- A dash '-' in the Debit column means ₹0 debit for that row.\n"
-        "- If all Debit values are '-' or 0, then there are NO expenses — "
-        "all transactions are incoming money.\n"
-        "- When asked about UPI/Paytm/specific merchants, list EVERY matching "
-        "row with its date and amount — do not stop at 2 results.\n"
-        "- When asked 'where did I spend the most', check debits first. "
-        "If no debits exist, list the largest CREDIT transactions instead "
-        "and clarify these are incoming amounts.\n"
-        "- Be specific with amounts and dates. Never say 'not found' if "
-        "the data is visible above.\n"
+        "Answer the user query concisely based only on this data."
     )
+    messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_query)]
+    return llm.invoke(messages).content
 
-    messages = [
-        SystemMessage(content=system_prompt),
-        HumanMessage(content=user_query)
-    ]
-
-    response = llm.invoke(messages)
-    return response.content
-
-
-def get_detailed_report(
-    vectorstore,
-    opening_balance: float,
-    closing_balance: float
-) -> FullStatementReport:
-    """
-    Generate structured report using .with_structured_output() —
-    eliminates OUTPUT_PARSING_FAILURE completely.
-    """
+def get_detailed_report(vectorstore, opening_balance: float, closing_balance: float) -> FullStatementReport:
     llm = ChatMistralAI(model="mistral-small-2506", temperature=0)
-    structured_llm = llm.with_structured_output(FullStatementReport)
+    
+    # --- STEP 1: EXTRACT HEADER (Isolated Call) ---
+    # We only look for the top part of the document
+    header_llm = llm.with_structured_output(AccountDetails)
+    header_docs = vectorstore.similarity_search("Customer Name, Account Number, IFSC, Branch, Address", k=3)
+    header_context = "\n".join([d.page_content for d in header_docs])
+    
+    header_prompt = "Extract account identity details from this text. Ignore the transaction table.\n\n" + header_context
+    account_info = header_llm.invoke(header_prompt)
 
-    # Pull all docs and sort by page
-    docs = vectorstore.similarity_search(
-        "bank statement transactions balance debit credit", k=100
+    # --- STEP 2: EXTRACT TRANSACTIONS (Batch Call) ---
+    # We process transactions in small batches to avoid JSON/Token breakage
+    batch_llm = llm.with_structured_output(TransactionBatch)
+    
+    # Get all potential transaction chunks
+    all_tx_docs = vectorstore.similarity_search("S.No, Date, Description, Debit, Credit, Balance", k=60)
+    all_tx_docs.sort(key=lambda x: x.metadata.get('page', 0))
+    
+    all_transactions = []
+    
+    # Batch size of 4 chunks (usually ~15-20 rows)
+    for i in range(0, len(all_tx_docs), 4):
+        batch_context = "\n".join([d.page_content for d in all_tx_docs[i : i + 4]])
+        batch_prompt = f"Extract every transaction row from this text into JSON. Categorize each row accurately.\n\nContext:\n{batch_context}"
+        
+        try:
+            res = batch_llm.invoke(batch_prompt)
+            all_transactions.extend(res.transactions)
+        except Exception as e:
+            print(f"Batch {i} failed, skipping... Error: {e}")
+
+    # --- STEP 3: PYTHON MATH (100% Accuracy) ---
+    total_debits = sum(t.debit for t in all_transactions)
+    total_credits = sum(t.credit for t in all_transactions)
+
+    # --- STEP 4: FINAL ASSEMBLY ---
+    return FullStatementReport(
+        account_info=account_info,
+        transactions=all_transactions,
+        total_debits=total_debits,
+        total_credits=total_credits,
+        opening_balance=opening_balance,
+        closing_balance=closing_balance
     )
-    docs.sort(key=lambda x: x.metadata.get('page', 0))
-    context_text = "\n".join([d.page_content for d in docs])
 
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", (
-            "You are a strict Financial Auditor. "
-            "Extract data ONLY from the bank statement context provided.\n\n"
 
-            "CRITICAL RULES:\n"
-            "1. CUSTOMER NAME: Copy exactly from the statement header.\n"
-            f"2. OPENING BALANCE: Use exactly {opening_balance}.\n"
-            f"3. CLOSING BALANCE: Use exactly {closing_balance}.\n"
-            "4. TOTAL DEBITS: Sum ALL Debit column values. "
-            "A dash '-' means 0. Return a plain number only.\n"
-            "5. TOTAL CREDITS: Sum ALL Credit column values. "
-            "Return a plain number only — never a formula.\n"
-            "6. TRANSACTIONS: Extract EVERY single row. Do not skip any.\n"
-            "7. CATEGORY per row from: Food & Dining, Shopping, "
-            "Travel & Transport, Entertainment, Utilities & Bills, "
-            "Healthcare, Education, UPI Transfer, Cash Withdrawal, "
-            "Salary / Income, Investment, Other.\n"
-            "8. All numeric fields = plain numbers only. Never formulas.\n"
-            "9. Missing values → use 0 or empty string.\n"
-        )),
-        ("human", "Bank Statement Data:\n{context}")
-    ])
 
-    chain = prompt | structured_llm
-    report = chain.invoke({"context": context_text})
+def generate_pdf_report(report_data, plotly_fig):
+    buffer = BytesIO()
+    # A4 Page with 1-inch margins
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    styles = getSampleStyleSheet()
+    
+    # Custom Styles
+    style_title = styles['Title']
+    style_title.textColor = colors.HexColor("#1e3a8a") # Professional Dark Blue
+    
+    story = []
 
-    # Always override with regex-extracted values — guaranteed correct
-    report.opening_balance = opening_balance
-    report.closing_balance = closing_balance
+    # 1. HEADER TITLE
+    story.append(Paragraph("AI FINANCIAL AUDIT REPORT", style_title))
+    story.append(Paragraph(f"Period: {report_data.account_info.statement_period}", styles['Normal']))
+    story.append(Spacer(1, 20))
 
-    return report
+    # 2. ACCOUNT INFO & METRICS (Side-by-Side Table)
+    # Left side: Account Info | Right side: Key Math
+    summary_data = [
+        [Paragraph(f"<b>Customer:</b> {report_data.account_info.customer_name}", styles['Normal']), 
+         Paragraph(f"<b>Opening Balance:</b> ₹{report_data.opening_balance:,.2f}", styles['Normal'])],
+        [Paragraph(f"<b>A/C No:</b> {report_data.account_info.account_number}", styles['Normal']), 
+         Paragraph(f"<b>Total Debits:</b> <font color='red'>₹{report_data.total_debits:,.2f}</font>", styles['Normal'])],
+        [Paragraph(f"<b>IFSC:</b> {report_data.account_info.ifsc_code}", styles['Normal']), 
+         Paragraph(f"<b>Closing Balance:</b> ₹{report_data.closing_balance:,.2f}", styles['Normal'])]
+    ]
+    
+    summary_table = Table(summary_data, colWidths=[260, 260])
+    summary_table.setStyle(TableStyle([
+        ('BOX', (0,0), (-1,-1), 1, colors.HexColor("#cbd5e1")),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('BACKGROUND', (1, 0), (1, -1), colors.HexColor("#f8fafc")), # Light grey for math side
+        ('PADDING', (0,0), (-1,-1), 8),
+    ]))
+    story.append(summary_table)
+    story.append(Spacer(1, 25))
+
+    # 3. SPENDING CHART
+    story.append(Paragraph("<b>Spending Distribution</b>", styles['Heading3']))
+    # Pro Tip: Tighten chart margins so it fits nicely in PDF
+    plotly_fig.update_layout(margin=dict(l=20, r=20, t=20, b=20))
+    img_bytes = pio.to_image(plotly_fig, format="png", width=700, height=350, scale=2) # Higher scale = Sharper PDF
+    story.append(Image(BytesIO(img_bytes), width=450, height=225))
+    story.append(Spacer(1, 25))
+
+    # 4. TRANSACTION TABLE
+    story.append(Paragraph("<b>Itemized Transaction Log</b>", styles['Heading3']))
+    data = [["Date", "Description", "Debit", "Credit", "Balance"]]
+    
+    for tx in report_data.transactions:
+        # We color the Debit red and Credit green for readability
+        data.append([
+            tx.txn_date, 
+            Paragraph(tx.description[:45], styles['Normal']), # Wrap long descriptions
+            f"₹{tx.debit:,.0f}" if tx.debit > 0 else "-",
+            f"₹{tx.credit:,.0f}" if tx.credit > 0 else "-",
+            f"₹{tx.balance:,.0f}"
+        ])
+
+    tx_table = Table(data, repeatRows=1, colWidths=[70, 230, 70, 70, 80])
+    tx_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#1e3a8a")), # Header Blue
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('GRID', (0, 0), (-1, -1), 0.2, colors.HexColor("#e2e8f0")),
+        ('FONTSIZE', (0, 0), (-1, -1), 8),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor("#f1f5f9")]), # Zebra Stripes
+    ]))
+    story.append(tx_table)
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer

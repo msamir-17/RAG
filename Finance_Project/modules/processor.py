@@ -80,4 +80,12 @@ def process_pdf_to_memory(pdf_path: str):
         embedding=MistralAIEmbeddings()
     )
 
-    return vector_db, opening_balance, closing_balance
+    return vector_db, opening_balance, closing_balance 
+
+def extract_customer_name(docs):
+    full_text = " ".join([d.page_content for d in docs])
+    # Look for "Customer Name" or "Name" and grab the next few words
+    pattern = re.search(r'(?:Customer Name|Name)\s*:\s*([A-Z\s]{3,30})', full_text, re.IGNORECASE)
+    if pattern:
+        return pattern.group(1).strip()
+    return "User"

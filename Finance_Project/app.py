@@ -3,10 +3,20 @@ import os
 import plotly.express as px
 import pandas as pd
 from modules.processor import process_pdf_to_memory
-from modules.advicor import get_finance_advice, get_detailed_report
+from modules.advicor import get_finance_advice, get_detailed_report ,generate_pdf_report
 from streamlit.runtime.scriptrunner import get_script_run_ctx
 
 st.set_page_config(page_title="AI Finance Advisor", layout="wide")
+
+
+if "budgets" not in st.session_state:
+    # Default goals
+    st.session_state.budgets = {
+        "Food & Dining": 5000,
+        "Travel & Transport": 3000,
+        "Shopping": 4000,
+        "Utilities & Bills": 2000
+    }
 
 # Session State
 if "ready" not in st.session_state:
@@ -50,7 +60,8 @@ with st.sidebar:
         st.markdown(f"**Closing Balance:** ₹{closing:,.2f}")
 
 if st.session_state.ready:
-    tab1, tab2 = st.tabs(["💬 Chat Advisor", "📊 Full Audit Report"])
+    
+    tab1, tab2, tab3 = st.tabs(["💬 Chat Advisor", "📊 Full Audit Report", "🎯 Budget Planner"])
 
     with tab1:
         for message in st.session_state.messages:
@@ -80,7 +91,7 @@ if st.session_state.ready:
                         st.session_state.opening_balance,
                         st.session_state.closing_balance
                     )
-
+                    st.session_state.report = report
                     st.subheader("🏦 Account Information")
                     c1, c2 = st.columns(2)
                     with c1:
@@ -100,21 +111,29 @@ if st.session_state.ready:
                     m3.metric("Closing Balance", f"₹{st.session_state.closing_balance:,.2f}")
 
                     st.subheader("📑 Itemized Transaction History")
-                    df = pd.DataFrame([t.model_dump() for t in report.transactions])
-                    st.dataframe(df, use_container_width=True)
 
-                    st.subheader("📊 Spending Breakdown")
-                    if not df.empty and 'category' in df.columns:
-                        spending_df = df[df['debit'] > 0].copy()
-                        if not spending_df.empty:
-                            chart_data = spending_df.groupby('category')['debit'].sum().reset_index()
-                            fig = px.pie(chart_data, values='debit', names='category',
-                                         title='Expenses by Category', hole=0.4)
-                            st.plotly_chart(fig, use_container_width=True)
-                        else:
-                            st.info("No debit transactions found to categorize.")
-                    else:
-                        st.error("Category data missing. Please regenerate the report.")
+                    df = pd.DataFrame([t.model_dump() for t in report.transactions])
+
+                    spending_df = df[df['debit'] > 0].copy()
+                
+                if not spending_df.empty:
+                    chart_data = spending_df.groupby('category')['debit'].sum().reset_index()
+                    fig = px.pie(chart_data, values='debit', names='category', hole=0.4)
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    # --- PASTE THE NEW CODE HERE ---
+                    st.success("✅ Analysis Complete! Your report is ready for download.")
+
+                    # New Step: Generate PDF Buffer
+                    pdf_buffer = generate_pdf_report(report, fig)
+
+                    # Add the Download Button
+                    st.download_button(
+                        label="📥 Download Full PDF Report",
+                        data=pdf_buffer,
+                        file_name=f"Financial_Report_{report.account_info.customer_name}.pdf",
+                        mime="application/pdf"
+                    )
 
                     st.divider()
                     st.subheader("🚩 AI Security Alerts")
@@ -125,6 +144,49 @@ if st.session_state.ready:
             except Exception as e:
                 st.error(f"Error generating report: {e}")
                 st.exception(e)
+
+    with tab3:
+        st.header("🎯 Smart Budget Planner")
+        
+        # 1. Set Goals Section
+        with st.expander("⚙️ Set Monthly Budget Goals"):
+            cols = st.columns(2)
+            for i, category in enumerate(st.session_state.budgets.keys()):
+                col = cols[i % 2]
+                st.session_state.budgets[category] = col.number_input(
+                    f"Goal for {category}", 
+                    value=st.session_state.budgets[category],
+                    step=500
+                )
+
+        # 2. Comparison Logic (Only if report exists)
+        if st.session_state.ready and "report" in st.session_state:
+            report = st.session_state.report 
+            st.subheader("Current Month Progress")
+            
+            # Calculate actual spending per category
+            df = pd.DataFrame([t.model_dump() for t in report.transactions])
+            
+            for category, goal in st.session_state.budgets.items():
+                # Get actual spent for this category
+                actual = df[df['category'] == category]['debit'].sum()
+                percent = min(actual / goal, 1.0) if goal > 0 else 0
+                
+                # Color logic
+                if percent >= 0.9: color = "red"
+                elif percent >= 0.7: color = "orange"
+                else: color = "green"
+                
+                # Display UI
+                st.write(f"**{category}**")
+                col_text, col_bar = st.columns([1, 4])  
+                col_text.write(f"₹{actual:,.0f} / ₹{goal:,.0f}")
+                col_bar.progress(percent)
+                
+                if actual > goal:
+                    st.error(f"⚠️ Over budget by ₹{actual - goal:,.0f}!")
+        else:
+            st.info("Generate the Full Audit Report first to see your budget progress.")
 else:
     st.info("👈 Please upload a bank statement in the sidebar to begin.")
     st.image("https://cdn-icons-png.flaticon.com/512/1611/1611179.png", width=100)
