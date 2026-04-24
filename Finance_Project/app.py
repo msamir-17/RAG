@@ -3,7 +3,7 @@ import os
 import plotly.express as px
 import pandas as pd
 from modules.processor import process_pdf_to_memory
-from modules.advicor import get_finance_advice, get_detailed_report ,generate_pdf_report
+from modules.advicor import get_finance_advice, get_detailed_report ,generate_pdf_report ,get_header_direct
 from streamlit.runtime.scriptrunner import get_script_run_ctx
 
 st.set_page_config(page_title="AI Finance Advisor", layout="wide")
@@ -47,10 +47,11 @@ with st.sidebar:
 
         with st.spinner("Processing your statement..."):
             # processor now returns 3 values
-            db, opening, closing = process_pdf_to_memory(file_path)
+            db, opening, closing, first_page  = process_pdf_to_memory(file_path)
             st.session_state.db = db
             st.session_state.opening_balance = opening
             st.session_state.closing_balance = closing
+            st.session_state.first_page_text = first_page
             st.session_state.ready = True
             st.success("Statement processed!")
 
@@ -89,7 +90,8 @@ if st.session_state.ready:
                     report = get_detailed_report(
                         st.session_state.db,
                         st.session_state.opening_balance,
-                        st.session_state.closing_balance
+                        st.session_state.closing_balance,
+                        st.session_state.first_page_text
                     )
                     st.session_state.report = report
                     st.subheader("🏦 Account Information")
@@ -145,48 +147,50 @@ if st.session_state.ready:
                 st.error(f"Error generating report: {e}")
                 st.exception(e)
 
+    # --- Inside Tab 3 (Budget Planner) ---
     with tab3:
         st.header("🎯 Smart Budget Planner")
         
-        # 1. Set Goals Section
-        with st.expander("⚙️ Set Monthly Budget Goals"):
-            cols = st.columns(2)
-            for i, category in enumerate(st.session_state.budgets.keys()):
-                col = cols[i % 2]
-                st.session_state.budgets[category] = col.number_input(
-                    f"Goal for {category}", 
-                    value=st.session_state.budgets[category],
-                    step=500
-                )
-
-        # 2. Comparison Logic (Only if report exists)
         if st.session_state.ready and "report" in st.session_state:
-            report = st.session_state.report 
-            st.subheader("Current Month Progress")
-            
-            # Calculate actual spending per category
+            report = st.session_state.report
             df = pd.DataFrame([t.model_dump() for t in report.transactions])
             
-            for category, goal in st.session_state.budgets.items():
-                # Get actual spent for this category
-                actual = df[df['category'] == category]['debit'].sum()
-                percent = min(actual / goal, 1.0) if goal > 0 else 0
+            # FIX: Only use years from the PDF
+            df['date_dt'] = pd.to_datetime(df['txn_date'], format='%d-%m-%Y', errors='coerce')
+
+            # 1. Create a label for EVERY row (e.g., "July 2022")
+            df['month_year'] = df['date_dt'].dt.strftime('%B %Y')
+
+            # 2. Get ONLY the unique labels for your dropdown menu
+            available_months = df['month_year'].dropna().unique()
+
+            # 3. Now show the selectbox
+            selected_month = st.selectbox("📅 Select Month", available_months)
+
+            # available_months = df['month_year'] = df['date_dt'].dt.strftime('%B %Y').dropna().unique()
+            
+            # selected_month = st.selectbox("📅 Select Month", available_months)
+            
+            # THE FORM: User must enter goals and CLICK a button
+            with st.form("budget_form"):
+                st.subheader(f"Set Goals for {selected_month}")
+                user_goals = {}
+                cols = st.columns(2)
+                for i, cat in enumerate(st.session_state.budgets.keys()):
+                    user_goals[cat] = cols[i%2].number_input(f"{cat} Goal", value=5000)
                 
-                # Color logic
-                if percent >= 0.9: color = "red"
-                elif percent >= 0.7: color = "orange"
-                else: color = "green"
-                
-                # Display UI
-                st.write(f"**{category}**")
-                col_text, col_bar = st.columns([1, 4])  
-                col_text.write(f"₹{actual:,.0f} / ₹{goal:,.0f}")
-                col_bar.progress(percent)
-                
-                if actual > goal:
-                    st.error(f"⚠️ Over budget by ₹{actual - goal:,.0f}!")
+                submit_budget = st.form_submit_button("🔥 Check My Budget")
+
+            if submit_budget:
+                # Show progress bars ONLY after button click
+                month_df = df[df['month_year'] == selected_month]
+                for cat, goal in user_goals.items():
+                    actual = month_df[month_df['category'] == cat]['debit'].sum()
+                    percent = min(actual/goal, 1.0) if goal > 0 else 0
+                    st.write(f"**{cat}** (₹{actual:,.0f} / ₹{goal:,.0f})")
+                    st.progress(percent)
         else:
-            st.info("Generate the Full Audit Report first to see your budget progress.")
+            st.warning("⚠️ Please generate the 'Full Audit Report' in Tab 2 first.")
 else:
     st.info("👈 Please upload a bank statement in the sidebar to begin.")
     st.image("https://cdn-icons-png.flaticon.com/512/1611/1611179.png", width=100)

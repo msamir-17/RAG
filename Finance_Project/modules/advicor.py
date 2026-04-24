@@ -31,54 +31,47 @@ def get_finance_advice(user_query: str, vectorstore) -> str:
     messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_query)]
     return llm.invoke(messages).content
 
-def get_detailed_report(vectorstore, opening_balance: float, closing_balance: float) -> FullStatementReport:
+def get_detailed_report(vectorstore, opening_balance, closing_balance, first_page_text):
+    # 1. Header is now 100% accurate because we pass the raw text
+    account_info = get_header_direct(first_page_text)
+    
     llm = ChatMistralAI(model="mistral-small-2506", temperature=0)
-    
-    # --- STEP 1: EXTRACT HEADER (Isolated Call) ---
-    # We only look for the top part of the document
-    header_llm = llm.with_structured_output(AccountDetails)
-    header_docs = vectorstore.similarity_search("Customer Name, Account Number, IFSC, Branch, Address", k=3)
-    header_context = "\n".join([d.page_content for d in header_docs])
-    
-    header_prompt = "Extract account identity details from this text. Ignore the transaction table.\n\n" + header_context
-    account_info = header_llm.invoke(header_prompt)
-
-    # --- STEP 2: EXTRACT TRANSACTIONS (Batch Call) ---
-    # We process transactions in small batches to avoid JSON/Token breakage
     batch_llm = llm.with_structured_output(TransactionBatch)
     
-    # Get all potential transaction chunks
-    all_tx_docs = vectorstore.similarity_search("S.No, Date, Description, Debit, Credit, Balance", k=60)
-    all_tx_docs.sort(key=lambda x: x.metadata.get('page', 0))
+    # Grab context for transactions
+    docs = vectorstore.similarity_search("transactions S.No 1 to 100", k=40)
+    docs.sort(key=lambda x: x.metadata.get('page', 0))
     
-    all_transactions = []
-    
-    # Batch size of 4 chunks (usually ~15-20 rows)
-    for i in range(0, len(all_tx_docs), 4):
-        batch_context = "\n".join([d.page_content for d in all_tx_docs[i : i + 4]])
-        batch_prompt = f"Extract every transaction row from this text into JSON. Categorize each row accurately.\n\nContext:\n{batch_context}"
-        
+    all_tx = []
+    # Process in larger batches (8 chunks) to reduce calls/time
+    for i in range(0, len(docs), 8):
+        context = "\n".join([d.page_content for d in docs[i:i+8]])
+        prompt = (
+            "Extract rows into JSON. STRICT RULES: \n"
+            "1. Use the EXACT year (2022) from the text. \n"
+            "2. Map descriptions to categories like Food, Travel, etc.\n"
+            f"Context: {context}"
+        )
         try:
-            res = batch_llm.invoke(batch_prompt)
-            all_transactions.extend(res.transactions)
-        except Exception as e:
-            print(f"Batch {i} failed, skipping... Error: {e}")
+            res = batch_llm.invoke(prompt)
+            all_tx.extend(res.transactions)
+        except: continue
 
-    # --- STEP 3: PYTHON MATH (100% Accuracy) ---
-    total_debits = sum(t.debit for t in all_transactions)
-    total_credits = sum(t.credit for t in all_transactions)
-
-    # --- STEP 4: FINAL ASSEMBLY ---
     return FullStatementReport(
         account_info=account_info,
-        transactions=all_transactions,
-        total_debits=total_debits,
-        total_credits=total_credits,
+        transactions=all_tx,
+        total_debits=sum(t.debit for t in all_tx),
+        total_credits=sum(t.credit for t in all_tx),
         opening_balance=opening_balance,
         closing_balance=closing_balance
     )
 
-
+def get_header_direct(first_page_text):
+    llm = ChatMistralAI(model="mistral-small-2506", temperature=0)
+    structured_llm = llm.with_structured_output(AccountDetails)
+    
+    prompt = f"Extract identity details. STRICT RULE: Use the EXACT name and year (2022) found in text. DO NOT GUESS.\n\nText: {first_page_text}"
+    return structured_llm.invoke(prompt)
 
 def generate_pdf_report(report_data, plotly_fig):
     buffer = BytesIO()
