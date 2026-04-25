@@ -12,10 +12,13 @@ def transcribe_audio(audio_bytes):
     audio_file = BytesIO(audio_bytes)
     audio_file.name = "input.wav" 
 
+    finance_hints = "audit report, statement, IFSC, debit, credit, balance, transactions, Swiggy, Zomato, Uber"
+
     try:
         translation = client.audio.transcriptions.create(
             file=audio_file,
             model="whisper-large-v3",
+            prompt=finance_hints,
             response_format="json"
         )
         return translation.text
