@@ -3,7 +3,7 @@ import os
 import plotly.express as px
 import pandas as pd
 from modules.processor import process_pdf_to_memory
-from modules.advicor import get_finance_advice, get_detailed_report ,generate_pdf_report ,get_header_direct
+from modules.advicor import get_finance_advice, get_detailed_report ,generate_pdf_report 
 from streamlit.runtime.scriptrunner import get_script_run_ctx
 from modules.voice import transcribe_audio
 
@@ -48,11 +48,12 @@ with st.sidebar:
 
         with st.spinner("Processing your statement..."):
             # processor now returns 3 values
-            db, opening, closing, first_page  = process_pdf_to_memory(file_path)
+            db, opening, closing, first_page , raw_docs  = process_pdf_to_memory(file_path)
             st.session_state.db = db
             st.session_state.opening_balance = opening
             st.session_state.closing_balance = closing
             st.session_state.first_page_text = first_page
+            st.session_state.raw_docs = raw_docs
             st.session_state.ready = True
             st.success("Statement processed!")
 
@@ -78,9 +79,12 @@ if st.session_state.ready:
         final_prompt = None
         
         if voice_file:
-            with st.spinner("Transcribing..."):
-                final_prompt = transcribe_audio(voice_file.read())
-                st.info(f"You said: {final_prompt}") # Show user what was heard
+            audio_id = f"{voice_file.name}_{voice_file.size}"
+            if "last_processed_audio" not in st.session_state or st.session_state.last_processed_audio != audio_id:
+                with st.spinner("Transcribing..."):
+                    st.toast(f"✅ Transcribed: '{final_prompt}'", icon="🎙️")
+                    final_prompt = transcribe_audio(voice_file.read())
+                    st.info(f"You said: {final_prompt}") # Show user what was heard
         elif typed_prompt:
             final_prompt = typed_prompt
 
@@ -103,10 +107,11 @@ if st.session_state.ready:
                 with st.spinner("Extracting every detail..."):
                     # Pass pre-extracted balances — AI cannot hallucinate these now
                     report = get_detailed_report(
-                        st.session_state.db,
+                        # st.session_state.db,
                         st.session_state.opening_balance,
                         st.session_state.closing_balance,
-                        st.session_state.first_page_text
+                        st.session_state.first_page_text,
+                        st.session_state.raw_docs
                     )
                     st.session_state.report = report
                     st.subheader("🏦 Account Information")
@@ -229,6 +234,8 @@ if st.session_state.ready:
                     st.write("---")
         else:
             st.warning("⚠️ Please generate the 'Full Audit Report' in Tab 2 first.")
+
+
 else:
     st.info("👈 Please upload a bank statement in the sidebar to begin.")
     st.image("https://cdn-icons-png.flaticon.com/512/1611/1611179.png", width=100)

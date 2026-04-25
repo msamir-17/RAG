@@ -73,10 +73,10 @@ def process_pdf_to_memory(pdf_path: str):
     opening_balance = extract_opening_balance(docs)
     closing_balance = extract_closing_balance(docs)
 
-    chunks = RecursiveCharacterTextSplitter(chunk_size=2500, chunk_overlap=200).split_documents(docs)
+    chunks = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=100).split_documents(docs)
     vector_db = Chroma.from_documents(documents=chunks, embedding=MistralAIEmbeddings())
 
-    return vector_db, opening_balance, closing_balance, first_page_text
+    return vector_db, opening_balance, closing_balance, first_page_text ,docs
 
 def extract_customer_name(docs):
     full_text = " ".join([d.page_content for d in docs])

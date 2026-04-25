@@ -11,57 +11,86 @@ from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
 from reportlab.lib.styles import getSampleStyleSheet
 import plotly.io as pio
+from concurrent.futures import ThreadPoolExecutor
+from modules.schema import FullStatementReport, AccountDetails, Transaction
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
+ 
 
 # Helper schema for batching transactions
 class TransactionBatch(BaseModel):
     transactions: List[Transaction]
 
+
+def process_transaction_chunk(chunk_text, batch_llm):
+    prompt = f"Extract transaction rows into JSON. Use EXACT values and year. Categorize each.\n\nContext:\n{chunk_text}"
+    try:
+        return batch_llm.invoke(prompt).transactions
+    except:
+        return []
+
+
+# 1. REMOVE these lines that are causing the crash:
+# from langchain.chains.combine_documents import create_stuff_documents_chain
+# from langchain.chains import create_retrieval_chain
+
+# 2. USE these standard components instead:
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
+
 def get_finance_advice(user_query: str, vectorstore) -> str:
-    # (Keeping your high-context chat logic as it works well for simple queries)
     llm = ChatMistralAI(model="mistral-small-2506")
-    all_docs = vectorstore.similarity_search("bank statement transactions", k=100)
-    all_docs.sort(key=lambda x: x.metadata.get('page', 0))
-    full_statement = "\n".join([d.page_content for d in all_docs])
+    
+    # Define the Retriever
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+    
+    # Define the Prompt
+    template = """You are a concise Financial Advisor. 
+    Use the following pieces of context to answer the question.
+    Context: {context}
+    Question: {question}
+    Answer:"""
+    prompt = ChatPromptTemplate.from_template(template)
 
-    system_prompt = (
-        "You are an accurate Financial Advisor. Use this statement data:\n"
-        f"{full_statement}\n\n"
-        "Answer the user query concisely based only on this data."
+    # --- THE MODERN LCEL CHAIN (No complex imports needed) ---
+    # This chain: 1. Gets context, 2. Formats prompt, 3. Calls LLM, 4. Parses text
+    chain = (
+        {"context": retriever, "question": RunnablePassthrough()}
+        | prompt
+        | llm
+        | StrOutputParser()
     )
-    messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_query)]
-    return llm.invoke(messages).content
+    
+    return chain.invoke(user_query)
 
-def get_detailed_report(vectorstore, opening_balance, closing_balance, first_page_text):
-    # 1. Header is now 100% accurate because we pass the raw text
+
+# Updated Signature: No vectorstore needed here
+def get_detailed_report(opening_balance, closing_balance, first_page_text, raw_docs):
+    # 1. Deterministic Header (Direct from first_page_text)
     account_info = get_header_direct(first_page_text)
     
     llm = ChatMistralAI(model="mistral-small-2506", temperature=0)
     batch_llm = llm.with_structured_output(TransactionBatch)
     
-    # Grab context for transactions
-    docs = vectorstore.similarity_search("transactions S.No 1 to 100", k=40)
-    docs.sort(key=lambda x: x.metadata.get('page', 0))
+    # 2. Parallel Transaction Extraction (Using raw_docs text)
+    full_text = "\n".join([d.page_content for d in raw_docs])
+    text_batches = [full_text[i:i+4000] for i in range(0, len(full_text), 4000)]
     
-    all_tx = []
-    # Process in larger batches (8 chunks) to reduce calls/time
-    for i in range(0, len(docs), 8):
-        context = "\n".join([d.page_content for d in docs[i:i+8]])
-        prompt = (
-            "Extract rows into JSON. STRICT RULES: \n"
-            "1. Use the EXACT year (2022) from the text. \n"
-            "2. Map descriptions to categories like Food, Travel, etc.\n"
-            f"Context: {context}"
-        )
-        try:
-            res = batch_llm.invoke(prompt)
-            all_tx.extend(res.transactions)
-        except: continue
+    all_transactions = []
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        results = list(executor.map(lambda x: process_transaction_chunk(x, batch_llm), text_batches))
+        for res in results:
+            all_transactions.extend(res)
+
+    # 3. Python Math
+    total_debits = sum(t.debit for t in all_transactions)
+    total_credits = sum(t.credit for t in all_transactions)
 
     return FullStatementReport(
         account_info=account_info,
-        transactions=all_tx,
-        total_debits=sum(t.debit for t in all_tx),
-        total_credits=sum(t.credit for t in all_tx),
+        transactions=all_transactions,
+        total_debits=total_debits,
+        total_credits=total_credits,
         opening_balance=opening_balance,
         closing_balance=closing_balance
     )
