@@ -182,13 +182,36 @@ if st.session_state.ready:
                 submit_budget = st.form_submit_button("🔥 Check My Budget")
 
             if submit_budget:
-                # Show progress bars ONLY after button click
+                st.divider()
+                st.subheader(f"📊 Budget Analysis for {selected_month}")
+                
                 month_df = df[df['month_year'] == selected_month]
+                
                 for cat, goal in user_goals.items():
                     actual = month_df[month_df['category'] == cat]['debit'].sum()
-                    percent = min(actual/goal, 1.0) if goal > 0 else 0
-                    st.write(f"**{cat}** (₹{actual:,.0f} / ₹{goal:,.0f})")
-                    st.progress(percent)
+                    
+                    # Calculate status
+                    diff = goal - actual
+                    percent = min(actual / goal, 1.0) if goal > 0 else 0
+                    
+                    # UI Container for each category
+                    with st.container():
+                        col_label, col_status = st.columns([2, 1])
+                        
+                        with col_label:
+                            st.markdown(f"### {cat}")
+                            st.write(f"Spent: **₹{actual:,.0f}** | Goal: **₹{goal:,.0f}**")
+                            st.progress(percent)
+                        
+                        with col_status:
+                            st.write("") # Padding
+                            if diff >= 0:
+                                # UNDER BUDGET
+                                st.success(f"✅ UNDER BY\n₹{diff:,.0f}")
+                            else:
+                                # OVER BUDGET
+                                st.error(f"🚨 OVER BY\n₹{abs(diff):,.0f}")
+                    st.write("---")
         else:
             st.warning("⚠️ Please generate the 'Full Audit Report' in Tab 2 first.")
 else:
