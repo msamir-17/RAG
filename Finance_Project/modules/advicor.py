@@ -2,7 +2,7 @@ from langchain_mistralai import ChatMistralAI, MistralAIEmbeddings
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_chroma import Chroma
-from modules.schema import FullStatementReport, AccountDetails, Transaction
+from modules.schema import FullStatementReport, AccountDetails, Transaction , ForecastInsight
 from pydantic import BaseModel
 from typing import List
 from io import BytesIO
@@ -12,10 +12,9 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 from reportlab.lib.styles import getSampleStyleSheet
 import plotly.io as pio
 from concurrent.futures import ThreadPoolExecutor
-from modules.schema import FullStatementReport, AccountDetails, Transaction
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
- 
+import pandas as pd
 
 # Helper schema for batching transactions
 class TransactionBatch(BaseModel):
@@ -176,3 +175,42 @@ def generate_pdf_report(report_data, plotly_fig):
     doc.build(story)
     buffer.seek(0)
     return buffer
+
+
+
+def calculate_forecast(transactions):
+    # 1. Prepare Data
+    df = pd.DataFrame([t.model_dump() for t in transactions])
+    df['date_dt'] = pd.to_datetime(df['txn_date'], format='%d-%m-%Y', errors='coerce')
+    
+    # 2. Group by Month (Only Debits)
+    monthly_spend = df[df['debit'] > 0].groupby(df['date_dt'].dt.to_period('M'))['debit'].sum().reset_index()
+    monthly_spend['date_dt'] = monthly_spend['date_dt'].dt.to_timestamp()
+    
+    if len(monthly_spend) < 2:
+        return None, "Insufficient data (need at least 2 months)"
+
+    # 3. Simple Trend Logic: Growth Rate
+    # (Last Month + (Last Month * Average Growth Rate))
+    monthly_spend['growth'] = monthly_spend['debit'].pct_change()
+    avg_growth = monthly_spend['growth'].mean()
+    
+    last_val = monthly_spend['debit'].iloc[-1]
+    prediction = last_val * (1 + avg_growth)
+    
+    # Create prediction date
+    next_month_date = monthly_spend['date_dt'].iloc[-1] + pd.DateOffset(months=1)
+    
+    return (monthly_spend, next_month_date, prediction), None
+
+def get_forecast_insights(monthly_data, prediction):
+    llm = ChatMistralAI(model="mistral-small-2506", temperature=0)
+    structured_llm = llm.with_structured_output(ForecastInsight)
+    
+    history_str = monthly_data.to_string()
+    prompt = (
+        f"Based on this historical monthly spending:\n{history_str}\n"
+        f"And our mathematical prediction for next month: ₹{prediction:,.2f}\n"
+        "Provide a professional financial analysis of the trend and risks."
+    )
+    return structured_llm.invoke(prompt)

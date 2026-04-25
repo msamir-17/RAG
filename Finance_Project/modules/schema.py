@@ -42,3 +42,9 @@ class FullStatementReport(BaseModel):
     total_credits: float = Field(description="Sum of ALL values in the Credit column only")
     opening_balance: float = Field(description="Balance shown on the very FIRST row (S.No 1)")
     closing_balance: float = Field(description="Balance shown on the very LAST row of the statement")
+
+
+class ForecastInsight(BaseModel):
+    trend_analysis: str = Field(description="Briefly explain if spending is going up or down and why")
+    risk_warnings: List[str] = Field(description="List potential risks (e.g., 'Shopping is growing too fast')")
+    saving_tips: List[str] = Field(description="3 actionable tips to reduce the predicted spend")

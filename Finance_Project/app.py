@@ -3,9 +3,10 @@ import os
 import plotly.express as px
 import pandas as pd
 from modules.processor import process_pdf_to_memory
-from modules.advicor import get_finance_advice, get_detailed_report ,generate_pdf_report 
+from modules.advicor import get_finance_advice, get_detailed_report ,generate_pdf_report , calculate_forecast , get_forecast_insights
 from streamlit.runtime.scriptrunner import get_script_run_ctx
 from modules.voice import transcribe_audio
+import pandas as pd 
 
 st.set_page_config(page_title="AI Finance Advisor", layout="wide")
 
@@ -64,7 +65,7 @@ with st.sidebar:
 
 if st.session_state.ready:
     
-    tab1, tab2, tab3 = st.tabs(["💬 Chat Advisor", "📊 Full Audit Report", "🎯 Budget Planner"])
+    tab1, tab2, tab3, tab4 = st.tabs(["💬 Chat Advisor", "📊 Full Audit Report", "🎯 Budget Planner", "🔮 Spending Forecast"])
 
     with tab1:
         st.subheader("🎤 Voice or ⌨️ Type")
@@ -82,8 +83,8 @@ if st.session_state.ready:
             audio_id = f"{voice_file.name}_{voice_file.size}"
             if "last_processed_audio" not in st.session_state or st.session_state.last_processed_audio != audio_id:
                 with st.spinner("Transcribing..."):
-                    st.toast(f"✅ Transcribed: '{final_prompt}'", icon="🎙️")
                     final_prompt = transcribe_audio(voice_file.read())
+                    st.toast(f"✅ Transcribed: '{final_prompt}'", icon="🎙️")
                     st.info(f"You said: {final_prompt}") # Show user what was heard
         elif typed_prompt:
             final_prompt = typed_prompt
@@ -236,6 +237,51 @@ if st.session_state.ready:
             st.warning("⚠️ Please generate the 'Full Audit Report' in Tab 2 first.")
 
 
+    with tab4:
+        st.header("🔮 AI Expense Forecasting")
+        
+        if st.session_state.ready and "report" in st.session_state:
+            # 1. Run Math
+            data_pack, error = calculate_forecast(st.session_state.report.transactions)
+            
+            if error:
+                st.warning(error)
+            else:
+                monthly_df, next_date, pred_val = data_pack
+                
+                # 2. Visuals: Plotly Line Chart
+                # Combine past and future for the chart
+                future_df = pd.DataFrame({'date_dt': [monthly_df['date_dt'].iloc[-1], next_date], 
+                                        'debit': [monthly_df['debit'].iloc[-1], pred_val]})
+                
+                import plotly.graph_objects as go
+                fig = go.Figure()
+                # Past Line (Solid)
+                fig.add_trace(go.Scatter(x=monthly_df['date_dt'], y=monthly_df['debit'], 
+                                        name='Actual Spend', line=dict(color='#6366f1', width=4)))
+                # Forecast Line (Dotted)
+                fig.add_trace(go.Scatter(x=future_df['date_dt'], y=future_df['debit'], 
+                                        name='Forecast', line=dict(color='#a855f7', width=4, dash='dot')))
+                
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # 3. AI Insights
+                with st.spinner("AI Analyzing Trends..."):
+                    insights = get_forecast_insights(monthly_df, pred_val)
+                    
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.metric("Predicted Next Month", f"₹{pred_val:,.2f}", 
+                                delta=f"{(pred_val - monthly_df['debit'].iloc[-1]):,.0f}")
+                        st.info(f"**Trend Analysis:**\n{insights.trend_analysis}")
+                    with c2:
+                        st.warning("**Risk Alerts:**\n" + "\n".join([f"- {r}" for r in insights.risk_warnings]))
+                        st.success("**Optimization Tips:**\n" + "\n".join([f"- {t}" for t in insights.saving_tips]))
+        else:
+            st.info("👈 Generate the 'Full Audit Report' first to unlock forecasting.")
+
+
+
 else:
     st.info("👈 Please upload a bank statement in the sidebar to begin.")
-    st.image("https://cdn-icons-png.flaticon.com/512/1611/1611179.png", width=100)
+    st.image("https://cdn-icons-png.flaticon.com/512/1611/1611179.png", width=100)  
