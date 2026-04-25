@@ -5,6 +5,7 @@ import pandas as pd
 from modules.processor import process_pdf_to_memory
 from modules.advicor import get_finance_advice, get_detailed_report ,generate_pdf_report ,get_header_direct
 from streamlit.runtime.scriptrunner import get_script_run_ctx
+from modules.voice import transcribe_audio
 
 st.set_page_config(page_title="AI Finance Advisor", layout="wide")
 
@@ -65,20 +66,34 @@ if st.session_state.ready:
     tab1, tab2, tab3 = st.tabs(["💬 Chat Advisor", "📊 Full Audit Report", "🎯 Budget Planner"])
 
     with tab1:
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
+        st.subheader("🎤 Voice or ⌨️ Type")
+        
+        # 1. Capture Voice
+        voice_file = st.audio_input("Click to record your question")
+        
+        # 2. Capture Text
+        typed_prompt = st.chat_input("Ask about your transactions...")
+        
+        # 3. Determine the Active Prompt
+        final_prompt = None
+        
+        if voice_file:
+            with st.spinner("Transcribing..."):
+                final_prompt = transcribe_audio(voice_file.read())
+                st.info(f"You said: {final_prompt}") # Show user what was heard
+        elif typed_prompt:
+            final_prompt = typed_prompt
 
-        if prompt := st.chat_input("Ask about your transactions..."):
-            st.session_state.messages.append({"role": "user", "content": prompt})
+        # 4. Run existing Chat logic
+        if final_prompt:
+            st.session_state.messages.append({"role": "user", "content": final_prompt})
             with st.chat_message("user"):
-                st.markdown(prompt)
+                st.markdown(final_prompt)
 
             with st.chat_message("assistant"):
-                with st.spinner("Analyzing..."):
-                    response = get_finance_advice(prompt, st.session_state.db)
+                with st.spinner("Analyzing data..."):
+                    response = get_finance_advice(final_prompt, st.session_state.db)
                     st.markdown(response)
-
             st.session_state.messages.append({"role": "assistant", "content": response})
 
     with tab2:
