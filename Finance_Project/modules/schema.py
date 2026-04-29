@@ -48,3 +48,8 @@ class ForecastInsight(BaseModel):
     trend_analysis: str = Field(description="Briefly explain if spending is going up or down and why")
     risk_warnings: List[str] = Field(description="List potential risks (e.g., 'Shopping is growing too fast')")
     saving_tips: List[str] = Field(description="3 actionable tips to reduce the predicted spend")
+
+class IntentResponse(BaseModel):
+    intent: str = Field(description="Exactly one of: chat, audit, budget, forecast, navigate")
+    confidence: float = Field(description="Confidence score between 0.0 and 1.0")
+    rephrased: str = Field(description="A cleaned, professional version of the user's spoken query")

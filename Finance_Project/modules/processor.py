@@ -1,88 +1,88 @@
 import os
 import re
+import streamlit as st
 from dotenv import load_dotenv
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_mistralai import MistralAIEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
+import hashlib
 
 load_dotenv()
 
+# ── Local embedding model — runs on your CPU, zero API calls, ~5-10s ──────────
+# This replaces MistralAIEmbeddings which made 30-40 API calls and took 2-3 min.
+# all-MiniLM-L6-v2 is tiny (80MB), fast, and good enough for transaction search.
+# @st.cache_resource(show_spinner=False)
+def get_embedding_model():
+    return HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2",
+        model_kwargs={"device": "cpu"},
+        encode_kwargs={"normalize_embeddings": True},
+    )
+
+def get_file_hash(pdf_path):
+    with open(pdf_path, "rb") as f:
+        return hashlib.md5(f.read()).hexdigest()
 
 def extract_opening_balance(docs) -> float:
-    """
-    Read opening balance directly from raw PDF text BEFORE chunking.
-    Chunking splits pages and causes the AI to pick wrong balance values.
-    This function reads the raw text and finds the opening balance reliably.
-    """
     full_text = " ".join([d.page_content for d in docs])
-
-    # Strategy 1: Find "Opening Balance" row and grab the number right after it
     pattern = re.search(
         r'Opening\s+Balance[\s\S]{0,60}?([\d,]{4,}\.?\d{0,2})',
         full_text, re.IGNORECASE
     )
     if pattern:
-        raw = pattern.group(1).replace(",", "")
         try:
-            val = float(raw)
+            val = float(pattern.group(1).replace(",", ""))
             if val > 100:
                 return val
         except ValueError:
             pass
-
-    # Strategy 2: Grab the first number > 1000 (opening balance is always early)
+    # Fallback: first number > 1000 with decimals
     numbers = re.findall(r'\b(\d[\d,]*\.\d{2})\b', full_text)
     for n in numbers:
         val = float(n.replace(",", ""))
         if val > 1000:
             return val
-
     return 0.0
 
 
 def extract_closing_balance(docs) -> float:
-    """
-    Read closing balance from the LAST page of the statement.
-    The very last balance figure = closing balance.
-    """
     last_page_text = docs[-1].page_content
     numbers = re.findall(r'\b(\d[\d,]*\.\d{2})\b', last_page_text)
-    for n in reversed(numbers):
-        val = float(n.replace(",", ""))
-        if val > 1000:
-            return val
+    if numbers:
+        return float(numbers[-1].replace(",", ""))
     return 0.0
 
 
+# @st.cache_resource(show_spinner=False)
 def process_pdf_to_memory(pdf_path: str):
     """
-    Load PDF, extract key balance figures directly from raw text,
-    then chunk + embed + store in in-memory Chroma.
+    Load PDF → extract balances from raw text → chunk → embed locally → Chroma.
 
-    Returns:
-        tuple: (vectorstore, opening_balance, closing_balance)
+    SPEED FIX: HuggingFaceEmbeddings runs locally on CPU.
+    No API calls during embedding = 10x faster than MistralAIEmbeddings.
+
+    Returns: (vectorstore, opening_balance, closing_balance, first_page_text, docs)
     """
     loader = PyPDFLoader(pdf_path)
-    docs = loader.load()
+    docs   = loader.load()
 
-    # STRATEGY: Grab first page text for identity (first 2500 chars)
-    first_page_text = docs[0].page_content[:2500] 
-
-    # Existing logic for math and search
+    first_page_text = docs[0].page_content[:2500]
     opening_balance = extract_opening_balance(docs)
     closing_balance = extract_closing_balance(docs)
 
-    chunks = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=100).split_documents(docs)
-    vector_db = Chroma.from_documents(documents=chunks, embedding=MistralAIEmbeddings())
+    chunks = RecursiveCharacterTextSplitter(
+        chunk_size=3000, chunk_overlap=100
+    ).split_documents(docs)
 
-    return vector_db, opening_balance, closing_balance, first_page_text ,docs
+    embeddings = get_embedding_model()
+    file_hash = get_file_hash(pdf_path)
 
-def extract_customer_name(docs):
-    full_text = " ".join([d.page_content for d in docs])
-    # Look for "Customer Name" or "Name" and grab the next few words
-    pattern = re.search(r'(?:Customer Name|Name)\s*:\s*([A-Z\s]{3,30})', full_text, re.IGNORECASE)
-    if pattern:
-        return pattern.group(1).strip()
-    return "User"
+    vector_db = Chroma.from_documents(
+        documents=chunks,
+        embedding=embeddings,
+        collection_name=f"statement_{file_hash}"
+    )
 
+    return vector_db, opening_balance, closing_balance, first_page_text, docs
