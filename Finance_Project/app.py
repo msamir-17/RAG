@@ -5,21 +5,19 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
-from streamlit.runtime.scriptrunner import get_script_run_ctx
 
 from modules.advicor import (calculate_forecast, generate_pdf_report,
                               get_detailed_report, get_finance_advice,
                               get_forecast_insights)
 from modules.processor import process_pdf_to_memory
-from modules.voice import classify_intent , transcribe_audio , get_audio_hash
+from modules.voice import classify_intent, transcribe_audio, get_audio_hash, normalize_transcript
 
 # ── Page Config ───────────────────────────────────────────────────────────────
 st.set_page_config(page_title="AI Finance Advisor", page_icon="💰", layout="wide")
 
-# ── Theme-aware CSS (works in both dark and light mode) ───────────────────────
+# ── Theme-aware CSS ───────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-/* ── Adaptive card — works in dark and light ── */
 .fin-card {
     background: var(--background-color, #ffffff);
     border: 1px solid rgba(128,128,128,0.2);
@@ -27,19 +25,13 @@ st.markdown("""
     padding: 16px 20px;
     margin-bottom: 12px;
 }
-
-/* ── Metric cards ── */
 div[data-testid="metric-container"] {
     background: rgba(99,102,241,0.08);
     border: 1px solid rgba(99,102,241,0.2);
     border-radius: 12px;
     padding: 16px !important;
 }
-
-/* ── Sidebar nav radio — cleaner look ── */
-[data-testid="stSidebar"] .stRadio > div {
-    gap: 4px;
-}
+[data-testid="stSidebar"] .stRadio > div { gap: 4px; }
 [data-testid="stSidebar"] .stRadio > div > label {
     border-radius: 8px !important;
     padding: 8px 12px !important;
@@ -48,29 +40,21 @@ div[data-testid="metric-container"] {
 [data-testid="stSidebar"] .stRadio > div > label:hover {
     background: rgba(99,102,241,0.12) !important;
 }
-
-/* ── Progress bar color ── */
 div[data-testid="stProgress"] > div > div {
     background: linear-gradient(90deg, #6366f1, #a855f7) !important;
     border-radius: 99px !important;
 }
-
-/* ── Chat messages ── */
 [data-testid="stChatMessage"] {
     border-radius: 12px !important;
     border: 1px solid rgba(128,128,128,0.15) !important;
     margin-bottom: 8px !important;
 }
-
-/* ── Voice recorder button ── */
 [data-testid="stAudioInput"] button {
     border-radius: 99px !important;
     background: linear-gradient(135deg, #6366f1, #a855f7) !important;
     color: white !important;
     border: none !important;
 }
-
-/* ── Download button ── */
 [data-testid="stDownloadButton"] > button {
     background: linear-gradient(135deg, #10b981, #059669) !important;
     color: white !important;
@@ -78,8 +62,6 @@ div[data-testid="stProgress"] > div > div {
     border-radius: 10px !important;
     font-weight: 600 !important;
 }
-
-/* ── Generate button ── */
 [data-testid="stButton"] > button {
     border-radius: 10px !important;
     font-weight: 500 !important;
@@ -89,14 +71,8 @@ div[data-testid="stProgress"] > div > div {
     transform: translateY(-1px) !important;
     box-shadow: 0 4px 12px rgba(99,102,241,0.3) !important;
 }
-
-/* ── Selectbox and number input ── */
 [data-testid="stSelectbox"] > div,
-[data-testid="stNumberInput"] > div {
-    border-radius: 8px !important;
-}
-
-/* ── Tabs ── */
+[data-testid="stNumberInput"] > div { border-radius: 8px !important; }
 [data-testid="stTabs"] [data-baseweb="tab"] {
     border-radius: 8px 8px 0 0 !important;
     font-weight: 500 !important;
@@ -105,19 +81,12 @@ div[data-testid="stProgress"] > div > div {
 """, unsafe_allow_html=True)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-def get_audio_hash(audio_bytes: bytes) -> str:
-    return hashlib.md5(audio_bytes).hexdigest()
-
-
 def route_intent(text: str) -> int:
     """
-    FIX: case-insensitive, handles partial matches and natural phrases.
-    'generate the audit report' → 1
-    'show me forecast'          → 3
-    'open budget planner'       → 2
+    Case-insensitive intent router.
+    Returns tab index: 0=Chat, 1=Audit, 2=Budget, 3=Forecast
     """
     t = text.lower()
-
     audit_words    = ["audit", "full report", "full statement", "generate report",
                       "statement analysis", "transaction history"]
     budget_words   = ["budget", "goal", "planner", "spending limit", "set limit"]
@@ -132,14 +101,15 @@ def route_intent(text: str) -> int:
 
 TABS = ["💬 Chat Advisor", "📊 Full Audit Report", "🎯 Budget Planner", "🔮 Spending Forecast"]
 
-# ── Session State Defaults ────────────────────────────────────────────────────
+# ── 1. SESSION STATE INIT ─────────────────────────────────────────────────────
 _defaults = {
     "ready":            False,
     "messages":         [],
     "opening_balance":  0.0,
     "closing_balance":  0.0,
     "active_tab":       0,
-    "last_audio_hash":  "",
+    "voice_nav":        None,       # navigation buffer for voice commands
+    "last_voice_hash":  "",
     "budgets": {
         "Food & Dining":       5000,
         "Travel & Transport":  3000,
@@ -147,15 +117,25 @@ _defaults = {
         "Utilities & Bills":   2000,
     },
 }
-for _k, _v in _defaults.items():
-    if _k not in st.session_state:
-        st.session_state[_k] = _v
+for k, v in _defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
+
+# ── 2. APPLY VOICE NAVIGATION (before any UI renders) ────────────────────────
+# voice_nav is set by the voice processor and survives exactly ONE rerun.
+# We read it here at the very top — before the sidebar radio renders —
+# so the radio's index= sees the already-updated active_tab.
+if st.session_state.get("voice_nav") is not None:
+    st.session_state.active_tab = st.session_state.voice_nav
+    st.session_state.voice_nav  = None          # consume it so it never fires twice
 
 # ── Header ────────────────────────────────────────────────────────────────────
 st.title("💰 AI Personal Finance Advisor")
 st.caption("Upload your bank statement · ask questions · track spending · forecast the future")
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
+# ── 3. SIDEBAR — UI ONLY (no processing here) ────────────────────────────────
+voice_file = None
+
 with st.sidebar:
     st.header("📂 Upload Center")
     uploaded_file = st.file_uploader("Choose a bank statement (PDF)", type="pdf")
@@ -163,51 +143,36 @@ with st.sidebar:
     if uploaded_file:
         file_id = f"{uploaded_file.name}_{uploaded_file.size}"
         if st.session_state.get("last_uploaded_file") != file_id:
-            
-            # 1. WIPE OLD DATA
+
+            # Wipe old data
             for key in list(st.session_state.keys()):
-                if key not in ["budgets", "active_tab"]: 
+                if key not in ["budgets", "active_tab"]:
                     del st.session_state[key]
-            
-            # 2. RE-INITIALIZE DEFAULTS (So the app doesn't crash)
-            st.session_state.ready = False
-            st.session_state.messages = []
+
+            # Re-initialize defaults so app doesn't crash
+            st.session_state.ready             = False
+            st.session_state.messages          = []
             st.session_state.last_uploaded_file = file_id
-            
-            # 3. SAVE AND PROCESS
+            st.session_state.last_voice_hash   = ""
+            st.session_state.voice_nav         = None
+
+            # Save & process
             os.makedirs("data", exist_ok=True)
             file_path = os.path.join("data", "temp_statement.pdf")
             with open(file_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
-                
+
             with st.spinner("Reading new statement..."):
-                # Now processing starts from a clean memory
                 db, opening, closing, first_page, raw_docs = process_pdf_to_memory(file_path)
-                st.session_state.db = db
-                st.session_state.opening_balance = opening
-                st.session_state.closing_balance = closing
-                st.session_state.first_page_text = first_page
-                st.session_state.raw_docs = raw_docs
-                st.session_state.ready = True
+                st.session_state.db               = db
+                st.session_state.opening_balance  = opening
+                st.session_state.closing_balance  = closing
+                st.session_state.first_page_text  = first_page
+                st.session_state.raw_docs         = raw_docs
+                st.session_state.ready            = True
                 st.success("✅ New statement loaded!")
-    # ── Navigation (voice can change active_tab before this renders) ──
+
     if st.session_state.ready:
-        st.divider()
-        st.caption("NAVIGATE")
-        selection = st.radio(
-            "Page",
-            TABS,
-            index=st.session_state.active_tab,
-            key="nav_radio",
-            label_visibility="collapsed",
-        )
-        # Keep active_tab in sync with manual clicks
-        if TABS.index(selection) != st.session_state.active_tab:
-            st.session_state.active_tab = TABS.index(selection)
-
-
-if st.session_state.ready:
-    with st.sidebar:
         st.divider()
         st.caption("🎤 VOICE COMMAND")
         st.markdown(
@@ -217,51 +182,55 @@ if st.session_state.ready:
         )
         voice_file = st.audio_input("Record", key="global_voice", label_visibility="collapsed")
 
-    # FIX: read bytes ONCE, hash it, only process if new recording
-    
-         # 1. Use getvalue() - NEVER use .read() here
-    # Place this at the VERY START of the 'if st.session_state.ready' block
-    if voice_file:
-        # 1. Capture the raw data safely
-        # audio_data = voice_file.getvalue()
-        audio_data = voice_file.getvalue()  
-        
-        # 2. Calculate the fingerprint
-        current_voice_hash = get_audio_hash(audio_data)
+        st.divider()
+        st.caption("NAVIGATE")
+        # ⚠️ No key= here: a fixed key makes Streamlit restore the widget's
+        # cached value and ignore our programmatic index=, breaking voice nav.
+        selection = st.radio(
+            "Page",
+            TABS,
+            index=st.session_state.active_tab,
+            label_visibility="collapsed",
+        )
+        clicked_index = TABS.index(selection)
+        if clicked_index != st.session_state.active_tab:
+            st.session_state.active_tab = clicked_index
+            st.rerun()  # immediate rerun keeps state clean on manual click
+# ── 4. VOICE PROCESSING (global, outside sidebar) ────────────────────────────
+# HOW NAVIGATION WORKS (the two-rerun contract):
+#   Run A: voice detected → write voice_nav=tab_index → st.rerun()
+#   Run B: apply-block at top reads voice_nav → sets active_tab → clears voice_nav
+#          → sidebar radio renders with correct index= → page content renders
+# The radio has NO key= so Streamlit cannot restore a stale cached value.
+if st.session_state.ready and voice_file:
+    audio_data   = voice_file.getvalue()
+    current_hash = get_audio_hash(audio_data)
 
-        # 3. THE GUARD: Only proceed if this hash is DIFFERENT from the last one
-        if st.session_state.get("last_voice_hash") != current_voice_hash:
-            # Mark as processed immediately to prevent re-entry during rerun
-            st.session_state.last_voice_hash = current_voice_hash
-            
-            # Now it is safe to proceed to Step 2 (Transcribe)
-            with st.spinner("🎙️ Processing unique voice command..."):
-                transcript = transcribe_audio(audio_data)
+    if current_hash != st.session_state.get("last_voice_hash", ""):
+        st.session_state.last_voice_hash = current_hash
 
-                if transcript:
-                    from modules.voice import normalize_transcript
-                    transcript = normalize_transcript(transcript)
+        with st.spinner("🎙️ Listening..."):
+            transcript = transcribe_audio(audio_data)
 
-                    # Save to chat
-                    st.session_state.messages.append({
-                        "role": "user",
-                        "content": transcript
-                    })
+        if transcript:
+            transcript = normalize_transcript(transcript)
+            tab_index  = route_intent(transcript)
 
-                    # Get AI response
-                    response = get_finance_advice(transcript, st.session_state.db)
+            if tab_index != 0:
+                # ── NAVIGATION: write target, trigger clean rerun ────────────
+                # Do NOT touch active_tab here — let the apply-block own it.
+                st.session_state.voice_nav = tab_index
+                st.toast(f"🚀 Navigating to {TABS[tab_index]}", icon="🚀")
+                st.rerun()          # Run B will apply voice_nav correctly
+            else:
+                # ── CHAT: store transcript for the Chat page to consume ──────
+                # Using pending_voice means it works even if user is on another
+                # page — they'll see it next time they open Chat.
+                st.session_state.pending_voice = transcript
+                # If already on Chat page, rerun so message appears immediately
+                if st.session_state.active_tab == 0:
+                    st.rerun()
 
-                    st.session_state.messages.append({
-                        "role": "assistant",
-                        "content": response
-                    })
-
-                    st.write(response)
-                else:
-                    st.error("❌ Could not understand audio")
-        else:
-            # This is a rerun, we already handled this audio. Do nothing.
-            pass
 # ── Guard: nothing to show if no file uploaded ────────────────────────────────
 if not st.session_state.ready:
     st.info("👈 Upload a bank statement in the sidebar to get started.")
@@ -277,18 +246,16 @@ if current_page == "💬 Chat Advisor":
     st.subheader("💬 AI Financial Advisor")
     st.caption("Ask anything about your transactions — typing or voice both work.")
 
-    # Render history
-    # 1. Check if a voice message was sent from the sidebar
+    # Render full conversation history
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    # pending_voice  → set by voice processor when intent == Chat (tab_index 0)
+    # typed_prompt   → from the chat input widget
     pending_prompt = st.session_state.pop("pending_voice", None)
-
-    # 2. Get the typed input
-    typed_prompt = st.chat_input("Ask about your transactions…")
-
-    # 3. Use whichever one exists
-    final_prompt = pending_prompt or typed_prompt
-
-    # Pick up voice prompt if navigation didn't consume it
-   
+    typed_prompt   = st.chat_input("Ask about your transactions…")
+    final_prompt   = pending_prompt or typed_prompt
 
     if final_prompt:
         st.session_state.messages.append({"role": "user", "content": final_prompt})
@@ -308,7 +275,6 @@ if current_page == "💬 Chat Advisor":
 elif current_page == "📊 Full Audit Report":
     st.header("📊 Full Statement Analysis")
 
-    # Show cached report if already generated
     if "report" in st.session_state:
         st.info("✅ Report already generated. Click below to regenerate with fresh data.")
 
@@ -322,13 +288,11 @@ elif current_page == "📊 Full Audit Report":
                     st.session_state.raw_docs,
                 )
                 st.session_state.report = report
-
         except Exception as e:
             st.error(f"Error generating report: {e}")
             st.exception(e)
             st.stop()
 
-    # Render report if available (persists across reruns)
     if "report" in st.session_state:
         report = st.session_state.report
 
@@ -352,21 +316,21 @@ elif current_page == "📊 Full Audit Report":
 
         # ── Key Metrics ──
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Opening Balance",   f"₹{st.session_state.opening_balance:,.2f}")
-        m2.metric("Total Debits",      f"₹{report.total_debits:,.2f}")
-        m3.metric("Total Credits",     f"₹{report.total_credits:,.2f}")
-        m4.metric("Closing Balance",   f"₹{st.session_state.closing_balance:,.2f}")
+        m1.metric("Opening Balance", f"₹{st.session_state.opening_balance:,.2f}")
+        m2.metric("Total Debits",    f"₹{report.total_debits:,.2f}")
+        m3.metric("Total Credits",   f"₹{report.total_credits:,.2f}")
+        m4.metric("Closing Balance", f"₹{st.session_state.closing_balance:,.2f}")
 
         st.divider()
 
         # ── Transaction Table ──
         st.subheader("📑 Transaction History")
         df = pd.DataFrame([t.model_dump() for t in report.transactions])
-        st.dataframe(df, use_container_width=True, height=300)  # FIX: was missing
+        st.dataframe(df, use_container_width=True, height=300)
 
         # ── Spending Chart ──
         st.subheader("📊 Spending Breakdown")
-        spending_df = df[df["debit"] > 0].copy()  # FIX: defined here, not inside try block
+        spending_df = df[df["debit"] > 0].copy()
 
         if not spending_df.empty:
             chart_data = spending_df.groupby("category")["debit"].sum().reset_index()
@@ -377,12 +341,11 @@ elif current_page == "📊 Full Audit Report":
             fig.update_layout(
                 paper_bgcolor="rgba(0,0,0,0)",
                 plot_bgcolor="rgba(0,0,0,0)",
-                font_color=None,  # adapts to dark/light
+                font_color=None,
                 legend=dict(orientation="h", yanchor="bottom", y=-0.3),
             )
             st.plotly_chart(fig, use_container_width=True)
 
-            # ── PDF Download ──
             st.success("✅ Analysis complete!")
             pdf_buffer = generate_pdf_report(report, fig)
             st.download_button(
@@ -449,8 +412,6 @@ elif current_page == "🎯 Budget Planner":
                 with col_l:
                     st.markdown(f"**{cat}**")
                     st.caption(f"Spent ₹{actual:,.0f}  ·  Goal ₹{goal:,.0f}")
-                    # Color the bar based on status
-                    bar_color = "normal" if diff >= 0 else "inverse"
                     st.progress(percent)
                 with col_r:
                     if diff >= 0:

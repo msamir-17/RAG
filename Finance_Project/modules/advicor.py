@@ -31,8 +31,7 @@ def get_finance_advice(user_query: str, vectorstore) -> str:
     prompt = ChatPromptTemplate.from_template(template)
 
     chain = (
-        {"context": retriever, "question": RunnablePassthrough()}
-        | prompt | llm | StrOutputParser()
+        {"context": retriever, "question": RunnablePassthrough()} | prompt | llm | StrOutputParser()
     )
     return chain.invoke(user_query)
 
