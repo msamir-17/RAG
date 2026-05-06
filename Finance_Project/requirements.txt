@@ -28,3 +28,6 @@ tiktoken
 python-dotenv
 requests
 scikit-learn
+
+
+reportlab 
