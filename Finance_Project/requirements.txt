@@ -1,7 +1,30 @@
 streamlit
 pandas
 plotly
+numpy
+
+# LLM + LangChain
 langchain
+langchain-core
+langchain-community
+langchain-mistralai
+mistralai
 openai
-python-dotenv
+
+# Embeddings
+sentence-transformers
+huggingface-hub
+
+# Vector DB
+faiss-cpu
+
+# PDF Processing
 pypdf
+
+# Tokenizer
+tiktoken
+
+# Utils
+python-dotenv
+requests
+scikit-learn
