@@ -8,8 +8,12 @@ langchain
 langchain-core
 langchain-community
 langchain-mistralai
+langchain-huggingface
+langchain-chroma
+langchain-text-splitters
 mistralai
 openai
+groq
 
 # Embeddings
 sentence-transformers
@@ -17,6 +21,7 @@ huggingface-hub
 
 # Vector DB
 faiss-cpu
+chromadb
 
 # PDF Processing
 pypdf
@@ -24,10 +29,11 @@ pypdf
 # Tokenizer
 tiktoken
 
+# Data Validation
+pydantic
+
 # Utils
 python-dotenv
 requests
 scikit-learn
-
-
-reportlab 
+reportlab
