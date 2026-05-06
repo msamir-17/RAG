@@ -39,3 +39,5 @@ scikit-learn
 reportlab
 
 protobuf==3.20.3
+
+kaleido
