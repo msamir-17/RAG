@@ -57,16 +57,12 @@ def extract_closing_balance(docs) -> float:
 
 # @st.cache_resource(show_spinner=False)
 def process_pdf_to_memory(pdf_path: str):
-    """
-    Load PDF → extract balances from raw text → chunk → embed locally → Chroma.
-
-    SPEED FIX: HuggingFaceEmbeddings runs locally on CPU.
-    No API calls during embedding = 10x faster than MistralAIEmbeddings.
-
-    Returns: (vectorstore, opening_balance, closing_balance, first_page_text, docs)
-    """
     loader = PyPDFLoader(pdf_path)
     docs   = loader.load()
+
+    # 🔥 FIX: Validate immediately
+    if not docs or all(not d.page_content.strip() for d in docs):
+        return None, None, None, None, "INVALID_PDF"
 
     first_page_text = docs[0].page_content[:2500]
     opening_balance = extract_opening_balance(docs)
@@ -75,6 +71,10 @@ def process_pdf_to_memory(pdf_path: str):
     chunks = RecursiveCharacterTextSplitter(
         chunk_size=3000, chunk_overlap=100
     ).split_documents(docs)
+
+    # 🔥 EXTRA SAFETY (important)
+    if not chunks:
+        return None, None, None, None, "INVALID_PDF"
 
     embeddings = get_embedding_model()
     file_hash = get_file_hash(pdf_path)

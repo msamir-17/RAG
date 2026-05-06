@@ -566,7 +566,31 @@ with st.sidebar:
             path = os.path.join("data", "temp_statement.pdf")
             with open(path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
+
             with st.spinner("Reading statement…"):
+                with st.spinner("Reading statement…"):
+                    result = process_pdf_to_memory(path)
+
+                if result[-1] == "INVALID_PDF":
+                    st.markdown("""
+                    <div style="
+                    padding:15px;
+                    border-radius:10px;
+                    background:#fee2e2;
+                    border:1px solid #ef4444;
+                    color:#7f1d1d;
+                    ">
+                    <b>❌ Invalid PDF Detected</b><br><br>
+                    This file does not contain readable text.<br>
+                    Please upload a proper bank statement (not scanned or image-based).
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                    st.session_state.ready = False
+                    st.session_state.db = None
+
+                    st.stop()
+
                 db, opening, closing, first_page, raw_docs = process_pdf_to_memory(path)
                 st.session_state.update({
                     "db": db, "opening_balance": opening, "closing_balance": closing,
@@ -669,12 +693,36 @@ if current_page == "💬 Chat Advisor":
 
     if prompt:
         st.session_state.messages.append({"role": "user", "content": prompt})
+
         with st.chat_message("user"):
             st.markdown(prompt)
+
         with st.chat_message("assistant"):
             with st.spinner("Analyzing…"):
+
+                if not st.session_state.get("db"):
+                    st.markdown("""
+                    <div style="
+                    padding:15px;
+                    border-radius:10px;
+                    background:#fee2e2;
+                    border:1px solid #ef4444;
+                    color:#7f1d1d;
+                    ">
+                    <b>❌ Invalid PDF Detected</b><br><br>
+                    This file does not contain readable text.<br>
+                    Please upload a proper bank statement (not scanned or image-based).
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                    # IMPORTANT: don't assign response
+                    st.stop()
+
+                # ✅ Only here response should exist
                 response = get_finance_advice(prompt, st.session_state.db)
+
                 st.markdown(response)
+
         st.session_state.messages.append({"role": "assistant", "content": response})
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -773,13 +821,7 @@ elif current_page == "📊 Full Audit Report":
                     )
                 except Exception as pdf_err:
                     st.error(f"PDF error: {pdf_err}")
-        with col_print:
-            st.markdown(
-                '<button onclick="window.print()" style="width:100%;height:45px;'
-                'background:linear-gradient(135deg,#10b981,#059669);color:white;border:none;'
-                'border-radius:10px;cursor:pointer;font-weight:600;">🖨️ Print View</button>',
-                unsafe_allow_html=True,
-            )
+        
         st.markdown('</div>', unsafe_allow_html=True)
         st.success("✅ Analysis complete!")
 
