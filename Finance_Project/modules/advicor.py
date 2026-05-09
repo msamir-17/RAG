@@ -22,7 +22,8 @@ from modules.schema import FullStatementReport, AccountDetails, Transaction, For
 import datetime
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from reportlab.lib.pagesizes import A4
-
+from modules.category_classifier import classify_transaction
+from concurrent.futures import ThreadPoolExecutor
 
 
 from reportlab.platypus.flowables import Flowable
@@ -68,27 +69,8 @@ def get_header_direct(first_page_text):
     return structured_llm.invoke(prompt)
 
 
-# def get_detailed_report(opening_balance, closing_balance, first_page_text, raw_docs):
-#     account_info = get_header_direct(first_page_text)
-#     llm          = ChatMistralAI(model="mistral-small-2506", temperature=0)
-#     batch_llm    = llm.with_structured_output(TransactionBatch)
-#     full_text    = "\n".join([d.page_content for d in raw_docs])
-#     batches      = [full_text[i:i+6000] for i in range(0, len(full_text), 6000)]
 
-#     all_txns = []
-#     for batch in batches:
-#         all_txns.extend(_batch_with_retry(batch, batch_llm))
 
-#     return FullStatementReport(
-#         account_info    = account_info,
-#         transactions    = all_txns,
-#         total_debits    = sum(t.debit  for t in all_txns),
-#         total_credits   = sum(t.credit for t in all_txns),
-#         opening_balance = opening_balance,
-#         closing_balance = closing_balance,
-#     )
-
-from concurrent.futures import ThreadPoolExecutor
 
 @st.cache_data(show_spinner=False)
 def _cached_transactions(full_text: str):
@@ -123,6 +105,15 @@ def get_detailed_report(opening_balance, closing_balance, first_page_text, raw_d
 
     # ✅ Use cached + parallel version
     all_txns = _cached_transactions(full_text)
+    for t in all_txns:
+        result = classify_transaction(
+            narration = t.description,
+            amount    = t.debit if t.debit > 0 else t.credit,
+            is_credit = t.credit > 0 and t.debit == 0,
+        )
+        t.category = result['category']
+
+        
 
     # ✅ Final report (same as before)
     return FullStatementReport(

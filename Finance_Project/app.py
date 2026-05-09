@@ -11,489 +11,157 @@ from modules.advicor import (calculate_forecast,
 from modules.processor import process_pdf_to_memory
 from modules.voice import (classify_intent, get_audio_hash, normalize_transcript, transcribe_audio)
 
-
-
-
+# ── Session state (must be before inject_styles so sidebar_collapsed is initialized) ──
+_defaults = {
+    "ready": False, "messages": [], "opening_balance": 0.0, "closing_balance": 0.0,
+    "active_tab": 0, "voice_nav": None, "last_voice_hash": "",
+    "voice_status": "idle", "voice_label": "",
+    "theme": "dark", "sidebar_collapsed": False,
+    "budgets": {"Food & Dining": 5000, "Travel & Transport": 3000,
+                "Shopping": 4000, "Utilities & Bills": 2000},
+}
+for k, v in _defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
 
 
 def inject_styles():
-    st.markdown(
-STYLES = """
-<style>
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=DM+Mono:wght@400;500&display=swap');
+    try:
+        css_path = os.path.join(os.path.dirname(__file__), "assets", "theme.css")
+        with open(css_path, "r", encoding="utf-8") as f:
+            css = f.read()
+    except Exception:
+        css = ""
+    theme = st.session_state.get("theme", "dark")
+    # Append light-mode override directly into CSS so it always applies reliably
+    if theme == "light":
+        css += """
+        :root {
+            --bg: #f0f2f8 !important;
+            --bg-secondary: #e8eaf0 !important;
+            --surface: #ffffff !important;
+            --surface-hover: #f8f9fc !important;
+            --surface-elevated: #ffffff !important;
+            --surface-2: #f8f9fc !important;
+            --surface-3: #f1f3f9 !important;
+            --border: rgba(0,0,0,0.07) !important;
+            --border-strong: rgba(0,0,0,0.13) !important;
+            --text-primary: #111827 !important;
+            --text-secondary: #4b5563 !important;
+            --text-muted: #9ca3af !important;
+            --shadow-xs: 0 1px 2px rgba(0,0,0,0.05), 0 1px 3px rgba(0,0,0,0.04) !important;
+            --shadow-sm: 0 2px 8px rgba(0,0,0,0.06), 0 1px 3px rgba(0,0,0,0.04) !important;
+            --shadow-md: 0 4px 20px rgba(0,0,0,0.08), 0 2px 8px rgba(0,0,0,0.04) !important;
+            --shadow-lg: 0 8px 40px rgba(0,0,0,0.10), 0 4px 16px rgba(0,0,0,0.06) !important;
+            --shadow-accent: 0 4px 20px rgba(99,102,241,0.15) !important;
+        }
+        [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {
+            color: rgba(255,255,255,0.45) !important;
+        }
+        [data-testid="stSidebar"] * {
+            color: #8892a4 !important;
+        }
+        [data-testid="stSidebar"] .stRadio label:has(input:checked) {
+            color: #c7d2fe !important;
+        }
+        """
+    # Sidebar collapse override
+    if st.session_state.get("sidebar_collapsed"):
+        css += """
+        [data-testid="stSidebar"] { display: none !important; }
+        [data-testid="stAppViewContainer"] > section { margin-left: 0 !important; }
+        [data-testid="stMainBlockContainer"] { max-width: 100% !important; }
+        """
+    st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
 
-/* ── Design Tokens ── */
-:root {
-    --blue:        #3b82f6;
-    --blue-light:  #eff6ff;
-    --blue-mid:    rgba(59,130,246,0.12);
-    --blue-dark:   #1d4ed8;
-    --green:       #10b981;
-    --green-light: #ecfdf5;
-    --red:         #ef4444;
-    --red-light:   #fef2f2;
-    --amber:       #f59e0b;
-    --bg:          #f1f5f9;
-    --surface:     #ffffff;
-    --sidebar-bg:  #0f172a;
-    --text:        #0f172a;
-    --text2:       #64748b;
-    --text3:       #94a3b8;
-    --border:      #e2e8f0;
-    --radius:      14px;
-    --sidebar-w:   248px;
-    --shadow-sm:   0 1px 4px rgba(15,23,42,0.06);
-    --shadow-md:   0 4px 16px rgba(15,23,42,0.1);
-}
 
-/* ── Global ── */
-* { font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif !important; }
-h1, h2, h3, h4 { color: var(--text) !important; font-weight: 600 !important; letter-spacing: -0.01em !important; }
-p, span, li { color: var(--text2) !important; }
-body { background: var(--bg) !important; }
-
-/* ── App Shell ── */
-[data-testid="stAppViewContainer"] {
-    background: var(--bg) !important;
-}
-[data-testid="stMainBlockContainer"] {
-    padding: 2rem 2.5rem !important;
-    max-width: 1200px !important;
-}
-[data-testid="stHeader"] { display: none !important; }
-footer { display: none !important; }
-
-/* ── Sidebar: Dark Premium ── */
-[data-testid="stSidebar"] {
-    background: var(--sidebar-bg) !important;
-    border-right: 1px solid rgba(255,255,255,0.06) !important;
-    min-width: var(--sidebar-w) !important;
-    max-width: var(--sidebar-w) !important;
-    transition: min-width 0.28s cubic-bezier(.4,0,.2,1),
-                max-width 0.28s cubic-bezier(.4,0,.2,1) !important;
-}
-
-/* Sidebar text globally */
-[data-testid="stSidebar"] * { color: #94a3b8 !important; }
-[data-testid="stSidebar"] h1,
-[data-testid="stSidebar"] h2,
-[data-testid="stSidebar"] h3 {
-    color: #475569 !important;
-    font-size: 10px !important;
-    font-weight: 700 !important;
-    letter-spacing: 0.12em !important;
-    text-transform: uppercase !important;
-    margin: 1.25rem 0 0.5rem !important;
-}
-[data-testid="stSidebar"] p,
-[data-testid="stSidebar"] small,
-[data-testid="stSidebar"] span,
-[data-testid="stSidebar"] label {
-    font-size: 13.5px !important;
-    color: #94a3b8 !important;
-    line-height: 1.5 !important;
-}
-
-/* Sidebar divider */
-[data-testid="stSidebar"] hr {
-    border: none !important;
-    border-top: 1px solid rgba(255,255,255,0.06) !important;
-    margin: 1rem 0 !important;
-}
-
-/* Sidebar navigation radio */
-[data-testid="stSidebar"] .stRadio > div {
-    gap: 2px !important;
-}
-[data-testid="stSidebar"] .stRadio label {
-    display: flex !important;
-    align-items: center !important;
-    gap: 10px !important;
-    padding: 9px 12px !important;
-    border-radius: 9px !important;
-    cursor: pointer !important;
-    border: 1px solid transparent !important;
-    transition: all 0.15s ease !important;
-    color: #94a3b8 !important;
-    font-weight: 500 !important;
-    font-size: 13.5px !important;
-    margin: 1px 6px !important;
-}
-[data-testid="stSidebar"] .stRadio label:hover {
-    background: rgba(255,255,255,0.06) !important;
-    color: #cbd5e1 !important;
-}
-[data-testid="stSidebar"] .stRadio label[data-checked="true"],
-[data-testid="stSidebar"] .stRadio label:has(input:checked) {
-    background: rgba(59,130,246,0.18) !important;
-    border-color: rgba(59,130,246,0.25) !important;
-    color: #93c5fd !important;
-}
-
-/* Sidebar file uploader */
-[data-testid="stSidebar"] [data-testid="stFileUploader"] {
-    margin: 6px 0 !important;
-}
-[data-testid="stSidebar"] [data-testid="stFileUploader"] > div {
-    background: rgba(255,255,255,0.04) !important;
-    border: 1.5px dashed rgba(59,130,246,0.3) !important;
-    border-radius: 10px !important;
-    transition: border-color 0.15s, background 0.15s !important;
-}
-[data-testid="stSidebar"] [data-testid="stFileUploader"] > div:hover {
-    border-color: rgba(59,130,246,0.55) !important;
-    background: rgba(59,130,246,0.06) !important;
-}
-
-/* Sidebar collapse button — show it properly */
-[data-testid="stSidebarCollapsedControl"],
-button[data-testid="collapsedControl"],
-[data-testid="stSidebarNav"] button {
-    background: rgba(255,255,255,0.08) !important;
-    border: 1px solid rgba(255,255,255,0.1) !important;
-    border-radius: 8px !important;
-    color: #64748b !important;
-    visibility: visible !important;
-    display: flex !important;
-    opacity: 1 !important;
-}
-[data-testid="stSidebarCollapsedControl"]:hover {
-    background: rgba(255,255,255,0.14) !important;
-    color: #94a3b8 !important;
-}
-
-/* ── Topbar / Header area ── */
-[data-testid="stAppViewContainer"] > [data-testid="stMainBlockContainer"] > div:first-child h1 {
-    font-size: 28px !important;
-    font-weight: 700 !important;
-    letter-spacing: -0.02em !important;
-    color: var(--text) !important;
-    margin-bottom: 4px !important;
-}
-
-/* ── Metric Cards ── */
-[data-testid="metric-container"] {
-    background: var(--surface) !important;
-    border: 1px solid var(--border) !important;
-    border-radius: var(--radius) !important;
-    padding: 16px 20px !important;
-    box-shadow: var(--shadow-sm) !important;
-    transition: box-shadow 0.15s, transform 0.15s !important;
-}
-[data-testid="metric-container"]:hover {
-    box-shadow: var(--shadow-md) !important;
-    transform: translateY(-1px) !important;
-}
-[data-testid="metric-container"] [data-testid="stMetricLabel"] p {
-    font-size: 12px !important;
-    color: var(--text3) !important;
-    font-weight: 500 !important;
-    text-transform: uppercase !important;
-    letter-spacing: 0.05em !important;
-}
-[data-testid="metric-container"] [data-testid="stMetricValue"] {
-    font-family: 'DM Mono', monospace !important;
-    font-size: 22px !important;
-    font-weight: 500 !important;
-    color: var(--text) !important;
-}
-
-/* ── Chat Messages ── */
-[data-testid="stChatMessage"] {
-    background: var(--surface) !important;
-    border: 1px solid var(--border) !important;
-    border-radius: 14px !important;
-    padding: 14px 16px !important;
-    box-shadow: var(--shadow-sm) !important;
-    margin-bottom: 10px !important;
-    animation: fadeUp 0.25s ease-out !important;
-    max-width: 80% !important;
-}
-/* User messages — right side */
-[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) {
-    background: rgba(59,130,246,0.08) !important;
-    border-color: rgba(59,130,246,0.18) !important;
-    margin-left: auto !important;
-    margin-right: 0 !important;
-}
-/* AI messages — left side */
-[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarAssistant"]) {
-    margin-right: auto !important;
-    margin-left: 0 !important;
-}
-@keyframes fadeUp {
-    from { opacity: 0; transform: translateY(8px); }
-    to   { opacity: 1; transform: translateY(0); }
-}
-
-/* ── Chat Input ── */
-[data-testid="stChatInputContainer"] {
-    padding: 12px 0 0 !important;
-}
-[data-testid="stChatInputContainer"] textarea {
-    border-radius: 12px !important;
-    border: 1.5px solid var(--border) !important;
-    background: var(--surface) !important;
-    font-size: 14px !important;
-    padding: 12px 16px !important;
-    box-shadow: var(--shadow-sm) !important;
-    transition: border-color 0.15s, box-shadow 0.15s !important;
-    resize: none !important;
-    color: var(--text) !important;
-}
-[data-testid="stChatInputContainer"] textarea:focus {
-    border-color: var(--blue) !important;
-    box-shadow: 0 0 0 3px rgba(59,130,246,0.1) !important;
-    outline: none !important;
-}
-
-/* ── Buttons ── */
-[data-testid="stButton"] > button,
-[data-testid="stDownloadButton"] > button {
-    border-radius: 10px !important;
-    font-weight: 600 !important;
-    font-size: 13.5px !important;
-    padding: 9px 18px !important;
-    transition: all 0.15s cubic-bezier(.4,0,.2,1) !important;
-    display: inline-flex !important;
-    align-items: center !important;
-    gap: 6px !important;
-}
-[data-testid="stButton"] > button[kind="primary"],
-[data-testid="stDownloadButton"] > button {
-    background: var(--blue) !important;
-    color: white !important;
-    border: none !important;
-    box-shadow: 0 2px 8px rgba(59,130,246,0.28) !important;
-}
-[data-testid="stButton"] > button[kind="primary"]:hover,
-[data-testid="stDownloadButton"] > button:hover {
-    background: var(--blue-dark) !important;
-    box-shadow: 0 4px 16px rgba(59,130,246,0.38) !important;
-    transform: translateY(-1px) !important;
-}
-[data-testid="stButton"] > button:not([kind="primary"]) {
-    background: var(--surface) !important;
-    color: var(--text) !important;
-    border: 1px solid var(--border) !important;
-    box-shadow: var(--shadow-sm) !important;
-}
-[data-testid="stButton"] > button:not([kind="primary"]):hover {
-    border-color: var(--blue) !important;
-    color: var(--blue-dark) !important;
-    box-shadow: var(--shadow-md) !important;
-    transform: translateY(-1px) !important;
-}
-
-/* ── Alerts / Info boxes ── */
-[data-testid="stAlert"] {
-    border-radius: 10px !important;
-    padding: 12px 16px !important;
-    border-left: 3px solid !important;
-    font-size: 13.5px !important;
-}
-[data-testid="stAlert"][data-baseweb="notification"] {
-    border-color: var(--amber) !important;
-    background: #fffbeb !important;
-}
-[data-testid="stAlert"][data-baseweb="notification"] * { color: #92400e !important; }
-.stSuccess { border-color: var(--green) !important; background: var(--green-light) !important; }
-.stSuccess * { color: #065f46 !important; }
-.stError { border-color: var(--red) !important; background: var(--red-light) !important; }
-.stError * { color: #991b1b !important; }
-
-/* st.info() */
-div[data-testid="stAlertContainer"] > div[role="alert"] {
-    border-radius: 10px !important;
-    border-left: 3px solid var(--blue) !important;
-    background: var(--blue-light) !important;
-    padding: 12px 16px !important;
-}
-div[data-testid="stAlertContainer"] > div[role="alert"] * { color: var(--blue-dark) !important; }
-
-/* ── Progress Bars ── */
-[data-testid="stProgress"] > div {
-    background: #e2e8f0 !important;
-    border-radius: 8px !important;
-    height: 8px !important;
-    overflow: hidden !important;
-}
-[data-testid="stProgress"] > div > div {
-    border-radius: 8px !important;
-    height: 100% !important;
-    background: linear-gradient(90deg, var(--blue), var(--green)) !important;
-    transition: width 0.4s ease !important;
-}
-
-/* ── Data Table ── */
-[data-testid="stDataFrame"] {
-    border-radius: 12px !important;
-    border: 1px solid var(--border) !important;
-    overflow: hidden !important;
-}
-[data-testid="stDataFrame"] thead th {
-    background: #f8fafc !important;
-    font-size: 12px !important;
-    font-weight: 600 !important;
-    color: var(--text2) !important;
-    text-transform: uppercase !important;
-    letter-spacing: 0.05em !important;
-    padding: 10px 14px !important;
-    border-bottom: 1px solid var(--border) !important;
-}
-[data-testid="stDataFrame"] tbody td {
-    font-size: 13.5px !important;
-    padding: 10px 14px !important;
-    color: var(--text) !important;
-    border-bottom: 1px solid #f1f5f9 !important;
-    font-family: 'DM Mono', monospace !important;
-}
-[data-testid="stDataFrame"] tbody tr:hover td {
-    background: #f8fafc !important;
-}
-
-/* ── Selectbox / Dropdowns ── */
-[data-testid="stSelectbox"] > div > div {
-    border-radius: 10px !important;
-    border: 1.5px solid var(--border) !important;
-    background: var(--surface) !important;
-    padding: 8px 14px !important;
-    font-size: 14px !important;
-    transition: border-color 0.15s !important;
-    color: var(--text) !important;
-}
-[data-testid="stSelectbox"] > div > div:focus-within {
-    border-color: var(--blue) !important;
-    box-shadow: 0 0 0 3px rgba(59,130,246,0.08) !important;
-}
-
-/* ── Number Input ── */
-[data-testid="stNumberInput"] input {
-    border-radius: 10px !important;
-    border: 1.5px solid var(--border) !important;
-    background: var(--surface) !important;
-    padding: 9px 14px !important;
-    font-size: 14px !important;
-    font-family: 'DM Mono', monospace !important;
-    color: var(--text) !important;
-    transition: border-color 0.15s !important;
-}
-[data-testid="stNumberInput"] input:focus {
-    border-color: var(--blue) !important;
-    box-shadow: 0 0 0 3px rgba(59,130,246,0.08) !important;
-    outline: none !important;
-}
-
-/* ── Toggle ── */
-[data-testid="stToggle"] label { font-size: 13.5px !important; color: var(--text2) !important; }
-
-/* ── Forms ── */
-[data-testid="stForm"] {
-    background: var(--surface) !important;
-    border: 1px solid var(--border) !important;
-    border-radius: var(--radius) !important;
-    padding: 20px 22px !important;
-    box-shadow: var(--shadow-sm) !important;
-}
-
-/* ── Expander ── */
-[data-testid="stExpander"] {
-    border: 1px solid var(--border) !important;
-    border-radius: 10px !important;
-    overflow: hidden !important;
-}
-[data-testid="stExpander"] > summary {
-    padding: 12px 16px !important;
-    font-size: 14px !important;
-    font-weight: 500 !important;
-    background: var(--surface) !important;
-}
-[data-testid="stExpander"] > summary:hover { background: #f8fafc !important; }
-
-/* ── Spinner ── */
-[data-testid="stSpinner"] { color: var(--blue) !important; }
-
-/* ── Voice / Audio Input ── */
-[data-testid="stAudioInput"] {
-    display: flex !important;
-    justify-content: center !important;
-    margin: 8px 0 !important;
-}
-[data-testid="stAudioInput"] button {
-    width: 52px !important;
-    height: 52px !important;
-    border-radius: 50% !important;
-    background: var(--green) !important;
-    color: white !important;
-    border: none !important;
-    box-shadow: 0 4px 14px rgba(16,185,129,0.32) !important;
-    font-size: 20px !important;
-    transition: transform 0.15s, box-shadow 0.15s !important;
-    display: flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-}
-[data-testid="stAudioInput"] button:hover {
-    transform: scale(1.08) !important;
-    box-shadow: 0 6px 20px rgba(16,185,129,0.42) !important;
-}
-[data-testid="stAudioInput"] button[data-recording="true"] {
-    animation: micPulse 1.4s ease-in-out infinite !important;
-}
-@keyframes micPulse {
-    0%, 100% { box-shadow: 0 4px 14px rgba(16,185,129,0.32); }
-    50%       { box-shadow: 0 4px 28px rgba(16,185,129,0.62); }
-}
-
-/* ── Caption / Subtitle ── */
-[data-testid="stCaptionContainer"] p,
-.stCaption {
-    font-size: 14px !important;
-    color: var(--text3) !important;
-}
-
-/* ── Subheader ── */
-h2[class*="stSubheader"] { font-size: 18px !important; }
-h3[class*="stSubheader"] { font-size: 16px !important; }
-
-/* ── Plotly Charts ── */
-.js-plotly-plot { border-radius: 12px !important; }
-
-/* ── Scrollbar ── */
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(100,116,139,0.2); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(100,116,139,0.35); }
-
-/* ── Print ── */
-@media print {
-    [data-testid="stSidebar"],
-    [data-testid="stToolbar"],
-    [data-testid="stDeployButton"],
-    .stButton, .no-print { display: none !important; }
-    body, [data-testid="stAppViewContainer"] {
-        background: white !important;
-    }
-    [data-testid="stMainBlockContainer"] { padding: 0 !important; max-width: 100% !important; }
-}
-
-/* ── Responsive: Narrower screens ── */
-@media (max-width: 900px) {
-    [data-testid="stMainBlockContainer"] { padding: 1rem !important; }
-    [data-testid="stSidebar"] { min-width: 200px !important; max-width: 200px !important; }
-}
-@media (max-width: 640px) {
-    [data-testid="stMainBlockContainer"] { padding: 0.75rem !important; }
-}
-</style>
-"""
-, unsafe_allow_html=True)
 
 # ── Page Config ───────────────────────────────────────────────────────────────
 st.set_page_config(page_title="AI Finance Advisor", page_icon="💰", layout="wide")
-
+inject_styles()
 # ── CSS — Premium Fintech Dashboard (Stripe/Razorpay/CRED style) ──────────────
 
+
+# ── Theme helpers ─────────────────────────────────────────────────────────────
+def set_theme(theme: str):
+    st.session_state.theme = theme
+    st.rerun()
+
+_PLOTLY_DARK = {
+    "paper_bgcolor": "rgba(0,0,0,0)", "plot_bgcolor": "rgba(0,0,0,0)",
+    "font": {"color": "#f0f2f8", "family": "Inter, sans-serif"},
+    "xaxis": {"gridcolor": "rgba(255,255,255,0.06)", "linecolor": "rgba(255,255,255,0.1)"},
+    "yaxis": {"gridcolor": "rgba(255,255,255,0.06)", "linecolor": "rgba(255,255,255,0.1)"},
+    "legend": {"bgcolor": "rgba(0,0,0,0)", "font": {"color": "#9ca3af"}},
+}
+_PLOTLY_LIGHT = {
+    "paper_bgcolor": "rgba(0,0,0,0)", "plot_bgcolor": "rgba(0,0,0,0)",
+    "font": {"color": "#111827", "family": "Inter, sans-serif"},
+    "xaxis": {"gridcolor": "rgba(0,0,0,0.06)", "linecolor": "rgba(0,0,0,0.1)"},
+    "yaxis": {"gridcolor": "rgba(0,0,0,0.06)", "linecolor": "rgba(0,0,0,0.1)"},
+    "legend": {"bgcolor": "rgba(0,0,0,0)", "font": {"color": "#4b5563"}},
+}
+_COLOR_PALETTE = ["#6366f1", "#3b82f6", "#10b981", "#f59e0b", "#f43f5e", "#a855f7", "#06b6d4", "#ec4899"]
+
+def get_plotly_theme():
+    return _PLOTLY_LIGHT if st.session_state.get("theme", "dark") == "light" else _PLOTLY_DARK
+
+def update_plotly_layout(fig):
+    theme = get_plotly_theme()
+    fig.update_layout(**theme)
+    return fig
+
+# ── UI Helpers ────────────────────────────────────────────────────────────────
+def render_metric_card(icon, icon_color, label, value, delta=None, delta_type="positive"):
+    delta_html = ""
+    if delta:
+        cls = "positive" if delta_type == "positive" else "negative"
+        delta_html = f'<div class="metric-info delta {cls}">{delta}</div>'
+    st.markdown(f"""
+    <div class="metric-card-custom">
+        <div class="metric-icon-bg {icon_color}">{icon}</div>
+        <div class="metric-info">
+            <div class="label">{label}</div>
+            <div class="value">{value}</div>
+            {delta_html}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+def render_ai_insight(text):
+    st.markdown(f"""
+    <div class="ai-insight-card">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
+            <div class="ai-insight-icon">AI</div>
+            <div style="font-size:15px;font-weight:700;color:var(--text-primary);">AI Insight</div>
+        </div>
+        <div class="ai-insight-text">{text}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+def txn_icon_emoji(category):
+    cmap = {
+        "Food & Dining": "🍔", "Groceries": "🛒", "Shopping": "🛍️",
+        "Travel & Transport": "🚗", "Entertainment": "🎬",
+        "Utilities & Bills": "⚡", "Healthcare": "🏥", "Education": "📚",
+        "Investments": "📈", "Insurance": "🛡️", "Loan/EMI": "🏦",
+        "Housing & Rent": "🏠", "Bank Transfer": "🏦", "UPI Transfer": "📲",
+        "Cash & ATM": "💵", "Income": "💰", "Taxes & Government": "🏛️",
+        "Charity & Donations": "🤝", "Other": "📋",
+    }
+    return cmap.get(category, "💳")
+
+def txn_icon_color(category):
+    cmap = {
+        "Food & Dining": "amber", "Groceries": "green", "Shopping": "purple",
+        "Travel & Transport": "blue", "Entertainment": "purple",
+        "Utilities & Bills": "green", "Healthcare": "red", "Education": "blue",
+        "Investments": "green", "Insurance": "blue", "Loan/EMI": "red",
+        "Housing & Rent": "blue", "Bank Transfer": "purple", "UPI Transfer": "blue",
+        "Cash & ATM": "amber", "Income": "green", "Taxes & Government": "red",
+        "Charity & Donations": "purple", "Other": "purple",
+    }
+    return cmap.get(category, "purple")
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 TABS = ["💬 Chat Advisor", "📊 Full Audit Report", "🎯 Budget Planner", "🔮 Spending Forecast"]
@@ -522,32 +190,71 @@ def parse_dates_flexible(series: pd.Series) -> pd.Series:
     return pd.to_datetime(series, infer_datetime_format=True, errors="coerce")
 
 
-# ── Session state ─────────────────────────────────────────────────────────────
-_defaults = {
-    "ready": False, "messages": [], "opening_balance": 0.0, "closing_balance": 0.0,
-    "active_tab": 0, "voice_nav": None, "last_voice_hash": "",
-    "voice_status": "idle", "voice_label": "",
-    "budgets": {"Food & Dining": 5000, "Travel & Transport": 3000,
-                "Shopping": 4000, "Utilities & Bills": 2000},
-}
-for k, v in _defaults.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
-
 # Apply voice navigation before sidebar renders
 if st.session_state.get("voice_nav") is not None:
     st.session_state.active_tab = st.session_state.voice_nav
     st.session_state.voice_nav  = None
 
 # ── Header ────────────────────────────────────────────────────────────────────
-st.title("💰 AI Personal Finance Advisor")
-st.caption("Upload your bank statement · ask questions · track spending · forecast the future")
+with st.container():
+    c1, c2, c3 = st.columns([0.1, 3, 1])
+    with c1:
+        # The Sidebar Toggle Button
+        icon = ">>" if st.session_state.sidebar_collapsed else "<<"
+        if st.button(icon, key="toggle_btn"):
+            st.session_state.sidebar_collapsed = not st.session_state.sidebar_collapsed
+            st.rerun()
+
+    with c2:
+        st.markdown("""
+        <div style="margin-bottom: 1.5rem;">
+            <h1 style="font-size: 28px; font-weight: 800; letter-spacing: -0.03em; margin-bottom: 4px;">
+                👋 Welcome back
+            </h1>
+            <p style="font-size: 14px; color: var(--text-muted); margin: 0;">
+                Upload your bank statement · ask questions · track spending · forecast the future
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+    with c3:
+        st.markdown("""
+        <div style="display:flex;justify-content:flex-end;align-items:center;gap:12px;margin-top:8px;">
+            <div style="text-align:right;">
+                <div style="font-size:13px;font-weight:600;color:var(--text-primary);">John Doe</div>
+                <div style="font-size:11px;color:var(--text-muted);">Personal Account</div>
+            </div>
+            <div style="width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#6366f1,#a855f7);display:flex;align-items:center;justify-content:center;font-size:16px;color:white;font-weight:700;">JD</div>
+        </div>
+        """, unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SIDEBAR
 # ══════════════════════════════════════════════════════════════════════════════
 voice_file = None
 with st.sidebar:
+    # Branding header
+    st.markdown("""
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;">
+        <div style="width:40px;height:40px;border-radius:12px;background:linear-gradient(135deg,#6366f1,#a855f7);display:flex;align-items:center;justify-content:center;font-size:20px;box-shadow:0 4px 12px rgba(99,102,241,0.25);">💰</div>
+        <div>
+            <div style="font-size:16px;font-weight:800;color:#f0f2f8;letter-spacing:-0.02em;">FinSmart AI</div>
+            <div style="font-size:11px;color:#8892a4;margin-top:2px;">Personal Finance Advisor</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Theme toggle
+    theme_col1, theme_col2 = st.columns([1, 1])
+    with theme_col1:
+        st.markdown('<div style="font-size:12px;color:#8892a4;padding-top:6px;">🌗 Theme</div>', unsafe_allow_html=True)
+    with theme_col2:
+        is_light = st.toggle("", value=st.session_state.theme == "light", key="theme_toggle", label_visibility="collapsed")
+        new_theme = "light" if is_light else "dark"
+        if new_theme != st.session_state.theme:
+            st.session_state.theme = new_theme
+            st.rerun()
+
+    st.markdown("<div style='margin: 12px 0;'></div>", unsafe_allow_html=True)
     st.header("📂  Upload Center")
     uploaded_file = st.file_uploader("Bank statement (PDF)", type="pdf", label_visibility="collapsed")
 
@@ -568,34 +275,38 @@ with st.sidebar:
                 f.write(uploaded_file.getbuffer())
 
             with st.spinner("Reading statement…"):
-                with st.spinner("Reading statement…"):
-                    result = process_pdf_to_memory(path)
-
-                if result[-1] == "INVALID_PDF":
-                    st.markdown("""
-                    <div style="
-                    padding:15px;
-                    border-radius:10px;
-                    background:#fee2e2;
-                    border:1px solid #ef4444;
-                    color:#7f1d1d;
-                    ">
-                    <b>❌ Invalid PDF Detected</b><br><br>
-                    This file does not contain readable text.<br>
-                    Please upload a proper bank statement (not scanned or image-based).
-                    </div>
-                    """, unsafe_allow_html=True)
-
-                    st.session_state.ready = False
-                    st.session_state.db = None
-
-                    st.stop()
-
-                db, opening, closing, first_page, raw_docs = process_pdf_to_memory(path)
-                st.session_state.update({
-                    "db": db, "opening_balance": opening, "closing_balance": closing,
-                    "first_page_text": first_page, "raw_docs": raw_docs, "ready": True,
-                })
+                result = process_pdf_to_memory(path)
+            
+            # Unpack result properly
+            db, opening, closing, first_page, raw_docs = result
+            
+            # CHECK FOR ERRORS (db is None means error occurred)
+            if db is None:
+                error_msg = raw_docs if isinstance(raw_docs, str) else "Unknown error"
+                
+                # Show appropriate error
+                if "INVALID_PDF" in error_msg:
+                    st.error("❌ Invalid PDF: No readable text found. Please upload a proper bank statement.")
+                elif "ENCRYPTED" in error_msg or "not been decrypted" in error_msg:
+                    st.error("❌ Encrypted PDF: Cannot read this file. Try a different PDF.")
+                elif "ERROR:" in error_msg:
+                    st.error(f"❌ Error: {error_msg}")
+                else:
+                    st.error(f"❌ Error reading PDF: {error_msg}")
+                
+                st.session_state.ready = False
+                st.session_state.db = None
+                st.stop()
+            
+            # PDF is VALID - Update session state
+            st.session_state.update({
+                "db": db,
+                "opening_balance": opening,
+                "closing_balance": closing,
+                "first_page_text": first_page,
+                "raw_docs": raw_docs,
+                "ready": True,
+            })
             st.success("✅ Statement loaded!")
 
     if st.session_state.ready:
@@ -671,7 +382,15 @@ if st.session_state.ready and voice_file:
 
 # ── Guard ─────────────────────────────────────────────────────────────────────
 if not st.session_state.ready:
-    st.info("👈 Upload a bank statement PDF in the sidebar to get started.")
+    st.markdown("""
+    <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:4rem 2rem;text-align:center;">
+        <div style="width:64px;height:64px;border-radius:20px;background:linear-gradient(135deg,#6366f1,#a855f7);display:flex;align-items:center;justify-content:center;font-size:28px;margin-bottom:20px;box-shadow:0 8px 24px rgba(99,102,241,0.25);">📄</div>
+        <div style="font-size:18px;font-weight:700;color:var(--text-primary);margin-bottom:8px;">Get Started</div>
+        <div style="font-size:14px;color:var(--text-muted);max-width:400px;line-height:1.6;">
+            Upload your bank statement PDF in the sidebar to unlock AI-powered financial insights, spending analysis, and budget planning.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
     st.stop()
 
 current_page = TABS[st.session_state.active_tab]
@@ -680,8 +399,8 @@ current_page = TABS[st.session_state.active_tab]
 # PAGE 1 — CHAT ADVISOR
 # ══════════════════════════════════════════════════════════════════════════════
 if current_page == "💬 Chat Advisor":
-    st.subheader("💬 AI Financial Advisor")
-    st.caption("Ask anything about your transactions — typing or voice both work.")
+    st.markdown("<h2 style='font-size: 24px; font-weight: 800; margin-bottom: 4px;'>💬 AI Financial Advisor</h2>", unsafe_allow_html=True)
+    st.markdown("<p style='color: var(--text-muted); font-size: 14px; margin-bottom: 1.5rem;'>Ask anything about your transactions — typing or voice both work.</p>", unsafe_allow_html=True)
 
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
@@ -702,25 +421,15 @@ if current_page == "💬 Chat Advisor":
 
                 if not st.session_state.get("db"):
                     st.markdown("""
-                    <div style="
-                    padding:15px;
-                    border-radius:10px;
-                    background:#fee2e2;
-                    border:1px solid #ef4444;
-                    color:#7f1d1d;
-                    ">
-                    <b>❌ Invalid PDF Detected</b><br><br>
-                    This file does not contain readable text.<br>
-                    Please upload a proper bank statement (not scanned or image-based).
+                    <div style="padding:16px;border-radius:12px;background:var(--red-subtle);border:1px solid var(--red);color:var(--text-primary);font-size:14px;">
+                        <b>❌ Invalid PDF Detected</b><br><br>
+                        This file does not contain readable text.<br>
+                        Please upload a proper bank statement (not scanned or image-based).
                     </div>
                     """, unsafe_allow_html=True)
-
-                    # IMPORTANT: don't assign response
                     st.stop()
 
-                # ✅ Only here response should exist
                 response = get_finance_advice(prompt, st.session_state.db)
-
                 st.markdown(response)
 
         st.session_state.messages.append({"role": "assistant", "content": response})
@@ -729,12 +438,12 @@ if current_page == "💬 Chat Advisor":
 # PAGE 2 — FULL AUDIT REPORT
 # ══════════════════════════════════════════════════════════════════════════════
 elif current_page == "📊 Full Audit Report":
-    st.header("📊 Full Statement Analysis")
+    st.markdown("<h2 style='font-size: 24px; font-weight: 800; margin-bottom: 4px;'>📊 Full Statement Analysis</h2>", unsafe_allow_html=True)
+    st.markdown("<p style='color: var(--text-muted); font-size: 14px; margin-bottom: 1.5rem;'>Comprehensive audit of your transactions, balances, spending patterns, and AI-powered security alerts.</p>", unsafe_allow_html=True)
 
     if "report" in st.session_state:
-        st.info("✅ Report already generated. Click below to regenerate.")
+        st.markdown("<div style='background:var(--green-subtle);border:1px solid var(--green);border-radius:12px;padding:12px 16px;font-size:13px;color:var(--green);font-weight:600;margin-bottom:1rem;'>✅ Report already generated. Click below to regenerate.</div>", unsafe_allow_html=True)
 
-    st.markdown('<div class="no-print">', unsafe_allow_html=True)
     if st.button("🔍 Generate Full Audit Report", type="primary"):
         try:
             with st.spinner("Extracting every detail… this may take 30–60 seconds."):
@@ -747,109 +456,141 @@ elif current_page == "📊 Full Audit Report":
         except Exception as e:
             st.error(f"Error generating report: {e}")
             st.stop()
-    st.markdown('</div>', unsafe_allow_html=True)
 
     if "report" in st.session_state:
         report = st.session_state.report
 
-        st.subheader("🏦 Account Information")
+        # Account Info Cards
+        st.markdown("<div style='margin-bottom: 1.5rem;'></div>", unsafe_allow_html=True)
+        st.markdown("<h3 style='font-size: 17px; font-weight: 700; margin-bottom: 1rem;'>🏦 Account Information</h3>", unsafe_allow_html=True)
         c1, c2 = st.columns(2)
         with c1:
-            st.info(
-                f"**Customer:** {report.account_info.customer_name}\n\n"
-                f"**A/C No:** {report.account_info.account_number}\n\n"
-                f"**Account Type:** {report.account_info.account_type}"
-            )
+            st.markdown(f"""
+            <div class="card">
+                <div style="font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 8px; font-weight: 600;">Account Holder</div>
+                <div style="font-size: 15px; font-weight: 700; color: var(--text-primary); margin-bottom: 12px;">{report.account_info.customer_name}</div>
+                <div style="font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 8px; font-weight: 600;">Account Number</div>
+                <div style="font-size: 14px; font-weight: 600; color: var(--text-primary); font-family: var(--mono);">{report.account_info.account_number}</div>
+            </div>
+            """, unsafe_allow_html=True)
         with c2:
-            st.info(
-                f"**IFSC:** {report.account_info.ifsc_code}\n\n"
-                f"**Branch:** {report.account_info.branch_name}\n\n"
-                f"**Period:** {report.account_info.statement_period}"
-            )
-        st.divider()
+            st.markdown(f"""
+            <div class="card">
+                <div style="font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 8px; font-weight: 600;">IFSC Code</div>
+                <div style="font-size: 14px; font-weight: 600; color: var(--text-primary); font-family: var(--mono); margin-bottom: 12px;">{report.account_info.ifsc_code}</div>
+                <div style="font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 8px; font-weight: 600;">Statement Period</div>
+                <div style="font-size: 14px; font-weight: 600; color: var(--text-primary);">{report.account_info.statement_period}</div>
+            </div>
+            """, unsafe_allow_html=True)
 
+        st.markdown("<div style='margin: 1.5rem 0;'></div>", unsafe_allow_html=True)
+
+        # Metric Cards
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Opening Balance", f"₹{st.session_state.opening_balance:,.2f}")
-        m2.metric("Total Debits",    f"₹{report.total_debits:,.2f}")
-        m3.metric("Total Credits",   f"₹{report.total_credits:,.2f}")
-        m4.metric("Closing Balance", f"₹{st.session_state.closing_balance:,.2f}")
-        st.divider()
+        with m1:
+            render_metric_card("💰", "purple", "Opening Balance", f"₹{st.session_state.opening_balance:,.2f}")
+        with m2:
+            render_metric_card("📤", "red", "Total Debits", f"₹{report.total_debits:,.2f}")
+        with m3:
+            render_metric_card("📥", "green", "Total Credits", f"₹{report.total_credits:,.2f}")
+        with m4:
+            render_metric_card("🏦", "blue", "Closing Balance", f"₹{st.session_state.closing_balance:,.2f}")
 
-        st.markdown('<div class="no-print">', unsafe_allow_html=True)
-        st.subheader("📑 Transaction History")
+        st.markdown("<div style='margin: 1.5rem 0;'></div>", unsafe_allow_html=True)
+
+        st.markdown("<h3 style='font-size: 17px; font-weight: 700; margin-bottom: 1rem;'>📑 Transaction History</h3>", unsafe_allow_html=True)
         df_txn = pd.DataFrame([t.model_dump() for t in report.transactions])
-        st.dataframe(df_txn, use_container_width=True, height=300)
-        st.markdown('</div>', unsafe_allow_html=True)
+        st.dataframe(df_txn, use_container_width=True, height=320)
 
-        st.subheader("📊 Spending Breakdown")
-        spending_df = df_txn[df_txn["debit"] > 0].copy()
-        fig = None
-        if not spending_df.empty:
-            chart_data = spending_df.groupby("category")["debit"].sum().reset_index()
-            fig = px.pie(chart_data, values="debit", names="category",
-                         hole=0.45, color_discrete_sequence=px.colors.qualitative.Pastel)
-            fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                              legend=dict(orientation="h", yanchor="bottom", y=-0.3))
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No debit transactions found.")
-        st.divider()
-
-        st.subheader("🚩 AI Security Alerts")
-        if "anomalies_text" not in st.session_state:
-            with st.spinner("Scanning for anomalies…"):
-                st.session_state.anomalies_text = get_finance_advice(
-                    "List all suspicious, unusually large, or duplicate transactions "
-                    "as bullet points with dates and amounts.",
-                    st.session_state.db,
+        # Spending Breakdown + AI Alerts side by side
+        col_chart, col_alerts = st.columns([3, 2])
+        with col_chart:
+            st.markdown("<h3 style='font-size: 17px; font-weight: 700; margin-bottom: 1rem;'>📊 Spending Breakdown</h3>", unsafe_allow_html=True)
+            spending_df = df_txn[df_txn["debit"] > 0].copy()
+            fig = None
+            if not spending_df.empty:
+                chart_data = spending_df.groupby("category")["debit"].sum().reset_index()
+                fig = px.pie(chart_data, values="debit", names="category",
+                             hole=0.55, color_discrete_sequence=_COLOR_PALETTE)
+                fig = update_plotly_layout(fig)
+                fig.update_layout(
+                    legend=dict(orientation="v", yanchor="middle", y=0.5, xanchor="left", x=-0.15, font=dict(size=11)),
+                    margin=dict(t=20, b=20, l=80, r=20),
+                    showlegend=True,
                 )
-        st.warning(st.session_state.anomalies_text)
-        st.divider()
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.markdown("""
+                <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:2rem;text-align:center;">
+                    <div style="width:48px;height:48px;border-radius:14px;background:var(--surface-2);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:20px;margin-bottom:12px;">📉</div>
+                    <div style="font-size:14px;font-weight:600;color:var(--text-secondary);margin-bottom:4px;">No Spending Data</div>
+                    <div style="font-size:12px;color:var(--text-muted);max-width:300px;line-height:1.5;">No debit transactions found in this statement to visualize.</div>
+                </div>
+                """, unsafe_allow_html=True)
 
-        st.markdown('<div class="no-print">', unsafe_allow_html=True)
-        col_pdf, col_print = st.columns(2)
+        with col_alerts:
+            st.markdown("<h3 style='font-size: 17px; font-weight: 700; margin-bottom: 1rem;'>🚩 AI Security Alerts</h3>", unsafe_allow_html=True)
+            if "anomalies_text" not in st.session_state:
+                with st.spinner("Scanning for anomalies…"):
+                    st.session_state.anomalies_text = get_finance_advice(
+                        "List all suspicious, unusually large, or duplicate transactions "
+                        "as bullet points with dates and amounts.",
+                        st.session_state.db,
+                    )
+            render_ai_insight(st.session_state.anomalies_text)
+
+        st.markdown("<div style='margin: 1.5rem 0;'></div>", unsafe_allow_html=True)
+
+        col_pdf, _ = st.columns([1, 3])
         with col_pdf:
-                
-                try:
-                    pdf_buf = generate_pdf_report(
-                        report, fig, st.session_state.get("anomalies_text")
-                    )
-                    st.download_button(
-                        "📥 Download Full Report PDF", pdf_buf,
-                        f"Report_{report.account_info.customer_name}.pdf",
-                        "application/pdf", use_container_width=True,
-                    )
-                except Exception as pdf_err:
-                    st.error(f"PDF error: {pdf_err}")
-        
-        st.markdown('</div>', unsafe_allow_html=True)
-        st.success("✅ Analysis complete!")
+            try:
+                pdf_buf = generate_pdf_report(
+                    report, fig, st.session_state.get("anomalies_text")
+                )
+                st.download_button(
+                    "📥 Download Full Report PDF", pdf_buf,
+                    f"Report_{report.account_info.customer_name}.pdf",
+                    "application/pdf", use_container_width=True,
+                )
+            except Exception as pdf_err:
+                st.error(f"PDF error: {pdf_err}")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE 3 — BUDGET PLANNER
 # ══════════════════════════════════════════════════════════════════════════════
 elif current_page == "🎯 Budget Planner":
-    st.header("🎯 Smart Budget Planner")
+    st.markdown("<h2 style='font-size: 24px; font-weight: 800; margin-bottom: 4px;'>🎯 Smart Budget Planner</h2>", unsafe_allow_html=True)
+    st.markdown("<p style='color: var(--text-muted); font-size: 14px; margin-bottom: 1.5rem;'>Set spending goals and track your progress by category.</p>", unsafe_allow_html=True)
 
     if "report" not in st.session_state:
-        st.warning("⚠️ Please generate the Full Audit Report first (Page 2).")
+        st.markdown("""
+        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:3rem 2rem;text-align:center;">
+            <div style="width:56px;height:56px;border-radius:16px;background:var(--amber-subtle);border:1px solid var(--amber);display:flex;align-items:center;justify-content:center;font-size:24px;margin-bottom:16px;">📊</div>
+            <div style="font-size:16px;font-weight:700;color:var(--text-primary);margin-bottom:6px;">Report Required</div>
+            <div style="font-size:13px;color:var(--text-muted);max-width:360px;line-height:1.6;">Generate the Full Audit Report first to unlock budget planning and spending insights.</div>
+        </div>
+        """, unsafe_allow_html=True)
         st.stop()
 
     report = st.session_state.report
 
-    # Build df with FLEXIBLE date parsing — fixes the all-zero bug
     df = pd.DataFrame([t.model_dump() for t in report.transactions])
     df["date_dt"]    = parse_dates_flexible(df["txn_date"])
     df["month_year"] = df["date_dt"].dt.strftime("%B %Y")
 
     available_months = [m for m in df["month_year"].dropna().unique().tolist() if m]
     if not available_months:
-        st.error("Could not parse transaction dates. Please check statement format.")
+        st.markdown("""
+        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:2rem;text-align:center;">
+            <div style="width:48px;height:48px;border-radius:14px;background:var(--red-subtle);border:1px solid var(--red);display:flex;align-items:center;justify-content:center;font-size:20px;margin-bottom:12px;">⚠️</div>
+            <div style="font-size:14px;font-weight:600;color:var(--text-secondary);margin-bottom:4px;">Date Parsing Error</div>
+            <div style="font-size:12px;color:var(--text-muted);max-width:320px;line-height:1.5;">Could not parse transaction dates from this statement. Please check the file format and try again.</div>
+        </div>
+        """, unsafe_allow_html=True)
         st.stop()
 
     selected_month = st.selectbox("📅 Select Month to Analyse", available_months)
 
-    # This is the KEY fix: filter BEFORE computing actuals
     month_df      = df[df["month_year"] == selected_month].copy()
     spending_df   = df[df["debit"] > 0].copy()
     all_cats      = sorted(spending_df["category"].dropna().unique().tolist())
@@ -865,7 +606,6 @@ elif current_page == "🎯 Budget Planner":
     if not show_all and extra_cats:
         st.caption(f"Hidden: {', '.join(extra_cats)} — toggle to set goals for all.")
 
-    # Seed defaults from ACTUAL monthly spend (not zeros)
     month_spend_df = month_df[month_df["debit"] > 0]
     for cat in all_cats:
         if cat not in st.session_state.budgets:
@@ -874,7 +614,7 @@ elif current_page == "🎯 Budget Planner":
             st.session_state.budgets[cat] = suggested
 
     with st.form("budget_form"):
-        st.subheader(f"Set Your Goals for {selected_month}")
+        st.markdown(f"<h3 style='font-size: 17px; font-weight: 700; margin-bottom: 1rem;'>Set Your Goals for {selected_month}</h3>", unsafe_allow_html=True)
         user_goals: dict = {}
 
         if show_all and extra_cats:
@@ -908,12 +648,11 @@ elif current_page == "🎯 Budget Planner":
 
     if submitted:
         st.session_state.budgets.update(user_goals)
-        st.divider()
-        st.subheader(f"📊 Budget vs Actual — {selected_month}")
+        st.markdown("<div style='margin: 1.5rem 0;'></div>", unsafe_allow_html=True)
+        st.markdown(f"<h3 style='font-size: 17px; font-weight: 700; margin-bottom: 1rem;'>📊 Budget vs Actual — {selected_month}</h3>", unsafe_allow_html=True)
 
         over_count = under_count = 0
         for cat, goal in user_goals.items():
-            # Use month_df filtered to selected month — actual real spend
             actual  = float(month_df[month_df["category"] == cat]["debit"].sum())
             diff    = goal - actual
             percent = min(actual / goal, 1.0) if goal > 0 else 0.0
@@ -923,32 +662,43 @@ elif current_page == "🎯 Budget Planner":
             else:
                 under_count += 1
 
+            icon_emoji = txn_icon_emoji(cat)
+            icon_color = txn_icon_color(cat)
             with st.container():
-                col_l, col_r = st.columns([3, 1])
-                with col_l:
-                    st.markdown(f"**{cat}**")
-                    st.caption(f"Spent ₹{actual:,.0f}  ·  Goal ₹{goal:,.0f}")
-                    st.progress(percent)
-                with col_r:
-                    if diff >= 0:
-                        st.success(f"✅ Under\n₹{diff:,.0f}")
-                    else:
-                        st.error(f"🚨 Over\n₹{abs(diff):,.0f}")
-            st.divider()
+                st.markdown(f"""
+                <div class="budget-card" style="margin-bottom: 12px;">
+                    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+                        <div style="display:flex;align-items:center;gap:10px;">
+                            <div class="metric-icon-bg {icon_color}" style="width:32px;height:32px;font-size:14px;">{icon_emoji}</div>
+                            <div>
+                                <div style="font-size:14px;font-weight:700;color:var(--text-primary);">{cat}</div>
+                                <div style="font-size:12px;color:var(--text-muted);">Spent ₹{actual:,.0f} · Goal ₹{goal:,.0f}</div>
+                            </div>
+                        </div>
+                        <div style="text-align:right;">
+                            <div style="font-size:14px;font-weight:700;color:{'var(--green)' if diff >= 0 else 'var(--red)'};">{'✅ Under' if diff >= 0 else '🚨 Over'}</div>
+                            <div style="font-size:12px;color:var(--text-muted);font-family:var(--mono);">₹{abs(diff):,.0f}</div>
+                        </div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+                st.progress(percent)
+            st.markdown("<div style='margin: 8px 0;'></div>", unsafe_allow_html=True)
 
+        st.markdown("<div style='margin: 1.5rem 0;'></div>", unsafe_allow_html=True)
         c1, c2 = st.columns(2)
         with c1:
-            st.metric("✅ Under Budget", under_count)
+            render_metric_card("✅", "green", "Under Budget", str(under_count))
         with c2:
-            st.metric("🚨 Over Budget", over_count,
-                      delta=f"{over_count} need attention" if over_count else "All good!",
-                      delta_color="inverse" if over_count else "normal")
+            render_metric_card("🚨", "red", "Over Budget", str(over_count), f"{over_count} need attention" if over_count else "All good!", "negative" if over_count else "positive")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE 4 — SPENDING FORECAST
 # ══════════════════════════════════════════════════════════════════════════════
 elif current_page == "🔮 Spending Forecast":
-    st.header("🔮 AI Spending Forecast")
+    st.markdown("<h2 style='font-size: 24px; font-weight: 800; margin-bottom: 4px;'>🔮 AI Spending Forecast</h2>", unsafe_allow_html=True)
+    st.markdown("<p style='color: var(--text-muted); font-size: 14px; margin-bottom: 1.5rem;'>Predict future spending patterns based on your transaction history.</p>", unsafe_allow_html=True)
+
     if "report" in st.session_state:
         data_pack, error = calculate_forecast(st.session_state.report.transactions)
         if error:
@@ -956,17 +706,37 @@ elif current_page == "🔮 Spending Forecast":
         else:
             monthly_df, next_date, pred_val = data_pack
             fig = go.Figure()
-            fig.add_trace(go.Scatter(x=monthly_df["date_dt"], y=monthly_df["debit"],
-                                     name="Actual", line=dict(color="#6366f1", width=3)))
+            fig.add_trace(go.Scatter(
+                x=monthly_df["date_dt"], y=monthly_df["debit"],
+                name="Actual", mode="lines+markers",
+                line=dict(color="#6366f1", width=3),
+                marker=dict(size=8, color="#6366f1", line=dict(color="rgba(99,102,241,0.3)", width=2)),
+                fill="tozeroy", fillcolor="rgba(99,102,241,0.08)",
+            ))
             fig.add_trace(go.Scatter(
                 x=[monthly_df["date_dt"].iloc[-1], next_date],
                 y=[monthly_df["debit"].iloc[-1], pred_val],
-                name="Forecast", line=dict(dash="dot", color="#a855f7", width=3),
+                name="Forecast", mode="lines+markers",
+                line=dict(dash="dot", color="#a855f7", width=3),
+                marker=dict(size=10, color="#a855f7", symbol="diamond"),
             ))
-            fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+            fig = update_plotly_layout(fig)
+            fig.update_layout(
+                margin=dict(t=20, b=40, l=60, r=20),
+                hovermode="x unified",
+                xaxis_title="Month",
+                yaxis_title="Amount (₹)",
+            )
             st.plotly_chart(fig, use_container_width=True)
+
             with st.spinner("AI Analysis…"):
                 insights = get_forecast_insights(monthly_df, pred_val)
-                st.info(f"**Trend Analysis:** {insights.trend_analysis}")
+                render_ai_insight(f"<b>Trend Analysis:</b> {insights.trend_analysis}")
     else:
-        st.info("👈 Generate the Full Audit Report first.")
+        st.markdown("""
+        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:3rem 2rem;text-align:center;">
+            <div style="width:56px;height:56px;border-radius:16px;background:var(--blue-subtle);border:1px solid var(--blue);display:flex;align-items:center;justify-content:center;font-size:24px;margin-bottom:16px;">🔮</div>
+            <div style="font-size:16px;font-weight:700;color:var(--text-primary);margin-bottom:6px;">Forecast Unavailable</div>
+            <div style="font-size:13px;color:var(--text-muted);max-width:360px;line-height:1.6;">Generate the Full Audit Report first to unlock AI-powered spending forecasts and trend analysis.</div>
+        </div>
+        """, unsafe_allow_html=True)

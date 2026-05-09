@@ -3,9 +3,10 @@ from typing import List, Optional
 
 # BUG FIX: Added 'category' field — was missing but app.py checks for it
 CATEGORY_OPTIONS = (
-    "Food & Dining, Shopping, Travel & Transport, Entertainment, "
-    "Utilities & Bills, Healthcare, Education, UPI Transfer, "
-    "Cash Withdrawal, Salary / Income, Investment, Other"
+    "Food & Dining, Groceries, Shopping, Travel & Transport, Entertainment, "
+    "Utilities & Bills, Healthcare, Education, Investments, Insurance, "
+    "Loan/EMI, Housing & Rent, Bank Transfer, UPI Transfer, Cash & ATM, "
+    "Income, Taxes & Government, Charity & Donations, Other"
 )
 
 class Transaction(BaseModel):
