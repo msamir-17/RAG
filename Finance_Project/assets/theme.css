@@ -103,7 +103,23 @@ p, span, li, label, small { color: var(--text-secondary) !important; line-height
 /* ===== APP SHELL ===== */
 [data-testid="stAppViewContainer"] { background: var(--bg) !important; }
 [data-testid="stMainBlockContainer"] { padding: 1.75rem 2.5rem 3rem !important; max-width: 1400px !important; }
-[data-testid="stHeader"], footer, #MainMenu { display: none !important; }
+[data-testid="stHeader"] { display: none !important; }
+footer, #MainMenu { display: none !important; }
+
+/* Desktop (>=769px): Sidebar fixed, hide toggle button */
+@media (min-width: 769px) {
+  [data-testid="stSidebar"] { min-width: 260px !important; max-width: 260px !important; }
+  [data-testid="stSidebarCollapseButton"],
+  [data-testid="collapsedControl"] { display: none !important; }
+}
+
+/* Mobile (<=768px): Streamlit native hamburger/X toggle */
+@media (max-width: 768px) {
+  [data-testid="stHeader"] { display: block !important; }
+  [data-testid="stSidebarCollapseButton"],
+  [data-testid="collapsedControl"] { display: flex !important; }
+  [data-testid="stSidebar"] { min-width: 260px !important; max-width: 260px !important; }
+}
 
 /* Fix element toolbar (Download/Clear/Copy buttons) */
 [data-testid="stElementToolbar"] { z-index: 1000 !important; }
@@ -117,12 +133,6 @@ p, span, li, label, small { color: var(--text-secondary) !important; line-height
 
 /* ===== SIDEBAR ===== */
 [data-testid="stSidebar"] { background: var(--sidebar-bg) !important; border-right: 1px solid var(--sidebar-border) !important; min-width: 260px !important; max-width: 260px !important; padding: 0 !important; position: relative; }
-
-/* Hide Streamlit's default sidebar collapse/expand button */
-[data-testid="stSidebarCollapseButton"],
-[data-testid="collapsedControl"] {
-  display: none !important;
-}
 
 [data-testid="stSidebar"]::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: linear-gradient(90deg, var(--accent), var(--purple), var(--blue)); z-index: 10; }
 [data-testid="stSidebar"] > div { padding: 1.5rem 1rem !important; }
@@ -315,11 +325,9 @@ h2[class*="stSubheader"], h3[class*="stSubheader"] { font-size: 17px !important;
 /* ===== RESPONSIVE ===== */
 @media (max-width: 1024px) {
   [data-testid="stMainBlockContainer"] { padding: 1.25rem 1.5rem 2rem !important; }
-  [data-testid="stSidebar"] { min-width: 220px !important; max-width: 220px !important; }
 }
 @media (max-width: 768px) {
   [data-testid="stMainBlockContainer"] { padding: 1rem 1rem 2rem !important; max-width: 100% !important; }
-  [data-testid="stSidebar"] { min-width: 200px !important; max-width: 200px !important; }
   [data-testid="metric-container"] [data-testid="stMetricValue"] { font-size: 20px !important; }
   [data-testid="stChatMessage"] { max-width: 95% !important; padding: 12px 14px !important; }
   .metric-card-custom { padding: 14px; gap: 12px; }

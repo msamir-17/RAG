@@ -77,7 +77,7 @@ def inject_styles():
 
 
 # ── Page Config ───────────────────────────────────────────────────────────────
-st.set_page_config(page_title="AI Finance Advisor", page_icon="💰", layout="wide")
+st.set_page_config(page_title="AI Finance Advisor", page_icon="💰", layout="wide", initial_sidebar_state="expanded")
 inject_styles()
 # ── CSS — Premium Fintech Dashboard (Stripe/Razorpay/CRED style) ──────────────
 
