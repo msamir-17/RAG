@@ -1,4 +1,6 @@
+import html
 import os
+import re
 
 import pandas as pd
 import plotly.express as px
@@ -10,6 +12,11 @@ from modules.advicor import (calculate_forecast,
                               get_forecast_insights, generate_pdf_report)
 from modules.processor import process_pdf_to_memory
 from modules.voice import (classify_intent, get_audio_hash, normalize_transcript, transcribe_audio)
+
+def strip_html_tags(text: str) -> str:
+    """Remove raw HTML tags from text (e.g. </div>) while keeping the rest."""
+    return re.sub(r'<[^>]+>', '', text)
+
 
 # ── Session state (must be before inject_styles so sidebar_collapsed is initialized) ──
 _defaults = {
@@ -190,7 +197,14 @@ if st.session_state.get("voice_nav") is not None:
 
 # ── Header ────────────────────────────────────────────────────────────────────
 with st.container():
-    header_col1, header_col2 = st.columns([3, 1])
+    if st.session_state.get("sidebar_collapsed"):
+        expand_col, header_col1, header_col2 = st.columns([0.4, 3, 1])
+        with expand_col:
+            if st.button(">>", key="expand_sidebar", help="Expand sidebar"):
+                st.session_state.sidebar_collapsed = False
+                st.rerun()
+    else:
+        header_col1, header_col2 = st.columns([3, 1])
 
     with header_col1:
         st.markdown("""
@@ -391,6 +405,7 @@ if current_page == "💬 Chat Advisor":
 
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
+            # Let Streamlit natively escape HTML (prevents </div> from breaking DOM)
             st.markdown(msg["content"])
 
     pending = st.session_state.pop("pending_voice", None)
@@ -417,6 +432,7 @@ if current_page == "💬 Chat Advisor":
                     st.stop()
 
                 response = get_finance_advice(prompt, st.session_state.db)
+                response = strip_html_tags(response)
                 st.markdown(response)
 
         st.session_state.messages.append({"role": "assistant", "content": response})

@@ -23,8 +23,9 @@ def get_file_hash(pdf_path):
 
 def extract_opening_balance(docs) -> float:
     full_text = " ".join([d.page_content for d in docs])
+    # 1. Look for explicit "Opening Balance" label with a number nearby
     pattern = re.search(
-        r'Opening\s+Balance[\s\S]{0,60}?([\d,]{4,}\.?\d{0,2})',
+        r'Opening\s+Balance[\s\S]{0,80}?([\d,]+\.?\d{0,2})',
         full_text, re.IGNORECASE
     )
     if pattern:
@@ -34,20 +35,61 @@ def extract_opening_balance(docs) -> float:
                 return val
         except ValueError:
             pass
-    # Fallback: first number > 1000 with decimals
-    numbers = re.findall(r'\b(\d[\d,]*\.\d{2})\b', full_text)
-    for n in numbers:
-        val = float(n.replace(",", ""))
-        if val > 1000:
-            return val
+    # 2. Look for "OPENING" near a balance column value
+    pattern2 = re.search(
+        r'(?:Opening|Open)\s*Bal[^\n]*?(\d[\d,]*\.\d{2})',
+        full_text, re.IGNORECASE
+    )
+    if pattern2:
+        try:
+            return float(pattern2.group(1).replace(",", ""))
+        except ValueError:
+            pass
+    # 3. Look for the first transaction row balance (S.No 1 balance)
+    first_row = re.search(
+        r'(?:1[\s|]+\d[\d/-]+\s+\d[\d/-]+\s+.+?)[\s]+(\d[\d,]*\.\d{2})[\s]*$',
+        full_text, re.MULTILINE
+    )
+    if first_row:
+        try:
+            return float(first_row.group(1).replace(",", ""))
+        except ValueError:
+            pass
     return 0.0
 
 
 def extract_closing_balance(docs) -> float:
+    full_text = " ".join([d.page_content for d in docs])
+    # 1. Look for explicit "Closing Balance" label with a number nearby
+    pattern = re.search(
+        r'Closing\s+Balance[\s\S]{0,80}?([\d,]+\.?\d{0,2})',
+        full_text, re.IGNORECASE
+    )
+    if pattern:
+        try:
+            val = float(pattern.group(1).replace(",", ""))
+            if val > 0:
+                return val
+        except ValueError:
+            pass
+    # 2. Look for "CLOSING" near a balance column value
+    pattern2 = re.search(
+        r'(?:Closing|Close)\s*Bal[^\n]*?(\d[\d,]*\.\d{2})',
+        full_text, re.IGNORECASE
+    )
+    if pattern2:
+        try:
+            return float(pattern2.group(1).replace(",", ""))
+        except ValueError:
+            pass
+    # 3. Fallback: last page, largest number with decimals (likely a balance)
     last_page_text = docs[-1].page_content
     numbers = re.findall(r'\b(\d[\d,]*\.\d{2})\b', last_page_text)
     if numbers:
-        return float(numbers[-1].replace(",", ""))
+        # Pick the largest number (balances are typically the largest values)
+        vals = sorted([float(n.replace(",", "")) for n in numbers], reverse=True)
+        if vals and vals[0] > 100:
+            return vals[0]
     return 0.0
 
 

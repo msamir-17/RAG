@@ -54,9 +54,16 @@ Answer:"""
 
 
 def _batch_with_retry(batch_text, batch_llm, retries=2):
+    system_msg = (
+        "You are extracting transactions from a bank statement. "
+        "ONLY extract rows that have a Serial Number (S.No), dates, and a monetary amount (debit/credit/balance). "
+        "DO NOT treat header text, footnotes, helpline numbers, PPF notes, or any non-transaction text as a transaction. "
+        "If a row does not look like a real financial transaction with an amount, SKIP it.\n\n"
+        "Text:\n" + batch_text
+    )
     for _ in range(retries):
         try:
-            return batch_llm.invoke(batch_text).transactions
+            return batch_llm.invoke(system_msg).transactions
         except Exception:
             time.sleep(1)
     return []

@@ -105,11 +105,11 @@ p, span, li, label, small { color: var(--text-secondary) !important; line-height
 [data-testid="stMainBlockContainer"] { padding: 1.75rem 2.5rem 3rem !important; max-width: 1400px !important; }
 [data-testid="stHeader"], footer, #MainMenu { display: none !important; }
 
-/* Fix element toolbar (Download/Clear buttons on audio etc.) */
+/* Fix element toolbar (Download/Clear/Copy buttons) */
 [data-testid="stElementToolbar"] { z-index: 1000 !important; }
-[data-testid="stElementToolbar"] svg { fill: currentColor !important; color: var(--text-secondary) !important; }
-[data-testid="stElementToolbarButton"] button { color: var(--text-secondary) !important; }
 .stElementContainer { overflow: visible !important; }
+/* Hide escaped HTML code blocks in chat */
+[data-testid="stCode"] { display: none !important; }
 /* Sidebar must scroll to show all content including voice section */
 [data-testid="stSidebar"] { overflow: auto !important; }
 [data-testid="stSidebar"] > div:first-child { overflow: auto !important; }
