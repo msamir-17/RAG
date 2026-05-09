@@ -65,13 +65,6 @@ def inject_styles():
             color: #c7d2fe !important;
         }
         """
-    # Sidebar collapse override
-    if st.session_state.get("sidebar_collapsed"):
-        css += """
-        [data-testid="stSidebar"] { display: none !important; }
-        [data-testid="stAppViewContainer"] > section { margin-left: 0 !important; }
-        [data-testid="stMainBlockContainer"] { max-width: 100% !important; }
-        """
     st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
 
 
@@ -197,15 +190,9 @@ if st.session_state.get("voice_nav") is not None:
 
 # ── Header ────────────────────────────────────────────────────────────────────
 with st.container():
-    c1, c2, c3 = st.columns([0.1, 3, 1])
-    with c1:
-        # The Sidebar Toggle Button
-        icon = ">>" if st.session_state.sidebar_collapsed else "<<"
-        if st.button(icon, key="toggle_btn"):
-            st.session_state.sidebar_collapsed = not st.session_state.sidebar_collapsed
-            st.rerun()
+    header_col1, header_col2 = st.columns([3, 1])
 
-    with c2:
+    with header_col1:
         st.markdown("""
         <div style="margin-bottom: 1.5rem;">
             <h1 style="font-size: 28px; font-weight: 800; letter-spacing: -0.03em; margin-bottom: 4px;">
@@ -216,7 +203,7 @@ with st.container():
             </p>
         </div>
         """, unsafe_allow_html=True)
-    with c3:
+    with header_col2:
         st.markdown("""
         <div style="display:flex;justify-content:flex-end;align-items:center;gap:12px;margin-top:8px;">
             <div style="text-align:right;">

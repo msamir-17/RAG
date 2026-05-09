@@ -49,6 +49,9 @@
   --sidebar-border: rgba(255,255,255,0.07);
   --sidebar-text: #8892a4;
   --sidebar-active: #c7d2fe;
+  --sidebar-heading: rgba(255,255,255,0.35);
+  --sidebar-hover-bg: rgba(255,255,255,0.06);
+  --sidebar-hover-text: rgba(255,255,255,0.9);
   --shadow-xs: 0 1px 2px rgba(0,0,0,0.3), 0 1px 3px rgba(0,0,0,0.15);
   --shadow-sm: 0 2px 8px rgba(0,0,0,0.35), 0 1px 3px rgba(0,0,0,0.2);
   --shadow-md: 0 4px 20px rgba(0,0,0,0.4), 0 2px 8px rgba(0,0,0,0.25);
@@ -73,11 +76,14 @@
   --text-primary: #111827;
   --text-secondary: #4b5563;
   --text-muted: #9ca3af;
-  --sidebar-bg: #0e1120;
-  --sidebar-surface: rgba(255,255,255,0.05);
-  --sidebar-border: rgba(255,255,255,0.07);
-  --sidebar-text: #8892a4;
-  --sidebar-active: #c7d2fe;
+  --sidebar-bg: #ffffff;
+  --sidebar-surface: rgba(0,0,0,0.03);
+  --sidebar-border: rgba(0,0,0,0.08);
+  --sidebar-text: #4b5563;
+  --sidebar-active: #6366f1;
+  --sidebar-heading: rgba(0,0,0,0.40);
+  --sidebar-hover-bg: rgba(0,0,0,0.04);
+  --sidebar-hover-text: #111827;
   --shadow-xs: 0 1px 2px rgba(0,0,0,0.05), 0 1px 3px rgba(0,0,0,0.04);
   --shadow-sm: 0 2px 8px rgba(0,0,0,0.06), 0 1px 3px rgba(0,0,0,0.04);
   --shadow-md: 0 4px 20px rgba(0,0,0,0.08), 0 2px 8px rgba(0,0,0,0.04);
@@ -89,7 +95,7 @@
 }
 
 /* ===== GLOBAL RESET ===== */
-*, *::before, *::after { font-family: var(--font) !important; box-sizing: border-box !important; }
+*, *::before, *::after { font-family: var(--font); box-sizing: border-box !important; }
 html, body { background: var(--bg) !important; color: var(--text-primary) !important; -webkit-font-smoothing: antialiased !important; -moz-osx-font-smoothing: grayscale !important; }
 h1, h2, h3, h4, h5, h6 { color: var(--text-primary) !important; font-weight: 700 !important; letter-spacing: -0.02em !important; line-height: 1.2 !important; }
 p, span, li, label, small { color: var(--text-secondary) !important; line-height: 1.6 !important; }
@@ -99,25 +105,42 @@ p, span, li, label, small { color: var(--text-secondary) !important; line-height
 [data-testid="stMainBlockContainer"] { padding: 1.75rem 2.5rem 3rem !important; max-width: 1400px !important; }
 [data-testid="stHeader"], footer, #MainMenu { display: none !important; }
 
+/* Fix element toolbar (Download/Clear buttons on audio etc.) */
+[data-testid="stElementToolbar"] { z-index: 1000 !important; }
+[data-testid="stElementToolbar"] svg { fill: currentColor !important; color: var(--text-secondary) !important; }
+[data-testid="stElementToolbarButton"] button { color: var(--text-secondary) !important; }
+.stElementContainer { overflow: visible !important; }
+/* Sidebar must scroll to show all content including voice section */
+[data-testid="stSidebar"] { overflow: auto !important; }
+[data-testid="stSidebar"] > div:first-child { overflow: auto !important; }
+[data-testid="stAudioInput"] { min-height: 80px !important; }
+
 /* ===== SIDEBAR ===== */
 [data-testid="stSidebar"] { background: var(--sidebar-bg) !important; border-right: 1px solid var(--sidebar-border) !important; min-width: 260px !important; max-width: 260px !important; padding: 0 !important; position: relative; }
+
+/* Hide Streamlit's default sidebar collapse/expand button */
+[data-testid="stSidebarCollapseButton"],
+[data-testid="collapsedControl"] {
+  display: none !important;
+}
+
 [data-testid="stSidebar"]::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: linear-gradient(90deg, var(--accent), var(--purple), var(--blue)); z-index: 10; }
 [data-testid="stSidebar"] > div { padding: 1.5rem 1rem !important; }
 [data-testid="stSidebar"] * { color: var(--sidebar-text) !important; }
-[data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 { color: rgba(255,255,255,0.35) !important; font-size: 10px !important; font-weight: 700 !important; letter-spacing: 0.15em !important; text-transform: uppercase !important; margin: 1.5rem 0 0.6rem 0.25rem !important; }
-[data-testid="stSidebar"] p, [data-testid="stSidebar"] span, [data-testid="stSidebar"] label, [data-testid="stSidebar"] small { font-size: 13px !important; color: var(--sidebar-text) !important; line-height: 1.5 !important; }
+[data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 { color: var(--sidebar-heading) !important; font-size: 12px !important; font-weight: 700 !important; letter-spacing: 0.12em !important; text-transform: uppercase !important; margin: 1.5rem 0 0.6rem 0.25rem !important; }
+[data-testid="stSidebar"] p, [data-testid="stSidebar"] span, [data-testid="stSidebar"] label, [data-testid="stSidebar"] small { font-size: 14px !important; color: var(--sidebar-text) !important; line-height: 1.5 !important; }
 [data-testid="stSidebar"] hr { border: none !important; border-top: 1px solid var(--sidebar-border) !important; margin: 1rem 0 !important; }
 
 /* Sidebar Nav Radio */
 [data-testid="stSidebar"] .stRadio > div { gap: 4px !important; }
-[data-testid="stSidebar"] .stRadio label { display: flex !important; align-items: center !important; gap: 10px !important; padding: 10px 14px !important; border-radius: var(--r-md) !important; cursor: pointer !important; border: 1px solid transparent !important; transition: all 0.2s ease !important; color: var(--sidebar-text) !important; font-weight: 500 !important; font-size: 13.5px !important; margin: 2px 0 !important; position: relative; }
-[data-testid="stSidebar"] .stRadio label:hover { background: rgba(255,255,255,0.06) !important; color: rgba(255,255,255,0.9) !important; transform: translateX(2px); }
+[data-testid="stSidebar"] .stRadio label { display: flex !important; align-items: center !important; gap: 10px !important; padding: 12px 16px !important; border-radius: var(--r-md) !important; cursor: pointer !important; border: 1px solid transparent !important; transition: all 0.2s ease !important; color: var(--sidebar-text) !important; font-weight: 500 !important; font-size: 14.5px !important; margin: 2px 0 !important; position: relative; }
+[data-testid="stSidebar"] .stRadio label:hover { background: var(--sidebar-hover-bg) !important; color: var(--sidebar-hover-text) !important; transform: translateX(2px); }
 [data-testid="stSidebar"] .stRadio label:has(input:checked) { background: linear-gradient(90deg, rgba(99,102,241,0.15), rgba(168,85,247,0.1)) !important; border-color: rgba(99,102,241,0.3) !important; color: var(--sidebar-active) !important; box-shadow: 0 0 0 1px rgba(99,102,241,0.15) inset !important; }
 [data-testid="stSidebar"] .stRadio [data-testid="stWidgetLabel"], [data-testid="stSidebar"] .stRadio input[type="radio"] { display: none !important; }
 
 /* Sidebar File Uploader */
-[data-testid="stSidebar"] [data-testid="stFileUploader"] section { background: rgba(255,255,255,0.03) !important; border: 1.5px dashed rgba(99,102,241,0.35) !important; border-radius: var(--r-lg) !important; padding: 18px 14px !important; transition: all 0.2s ease !important; cursor: pointer !important; }
-[data-testid="stSidebar"] [data-testid="stFileUploader"] section:hover { border-color: rgba(99,102,241,0.65) !important; background: rgba(99,102,241,0.06) !important; }
+[data-testid="stSidebar"] [data-testid="stFileUploader"] section { background: var(--sidebar-surface) !important; border: 1.5px dashed rgba(99,102,241,0.35) !important; border-radius: var(--r-lg) !important; padding: 18px 14px !important; transition: all 0.2s ease !important; cursor: pointer !important; }
+[data-testid="stSidebar"] [data-testid="stFileUploader"] section:hover { border-color: rgba(99,102,241,0.65) !important; background: var(--sidebar-hover-bg) !important; }
 
 /* ===== PAGE HEADER ===== */
 .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.75rem; padding-bottom: 1.25rem; border-bottom: 1px solid var(--border); }
