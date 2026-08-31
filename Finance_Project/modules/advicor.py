@@ -24,7 +24,7 @@ from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from reportlab.lib.pagesizes import A4
 from modules.category_classifier import classify_transaction
 from concurrent.futures import ThreadPoolExecutor
-
+from dataclasses import dataclass
 
 from reportlab.platypus.flowables import Flowable
 import plotly.io as pio
@@ -102,13 +102,24 @@ def _cached_transactions(full_text: str):
 
     return all_txns
 
+@dataclass
+class PerformanceMetrics:
+    latency_sec: float
+    throughput_rows_sec: float
+    estimated_tokens: int
+    cost_usd: float
 
 def get_detailed_report(opening_balance, closing_balance, first_page_text, raw_docs):
+
+    start_time = time.perf_counter() # Start Timer
+
     # ✅ Keep this (IMPORTANT)
     account_info = get_header_direct(first_page_text)
 
     # ✅ Prepare text
     full_text = "\n".join([d.page_content for d in raw_docs])
+        # Log token estimate (Approx 1 token per 4 chars)
+    estimated_input_tokens = len(full_text) // 4 
 
     # ✅ Use cached + parallel version
     all_txns = _cached_transactions(full_text)
@@ -120,9 +131,22 @@ def get_detailed_report(opening_balance, closing_balance, first_page_text, raw_d
         )
         t.category = result['category']
 
-        
+    end_time = time.perf_counter()
+    duration = end_time - start_time
+    
+    # Calculate Metrics
+    metrics = PerformanceMetrics(
+        latency_sec = duration,
+        throughput_rows_sec = len(all_txns) / duration if duration > 0 else 0,
+        estimated_tokens = estimated_input_tokens + (len(all_txns) * 50), # Input + JSON overhead
+        cost_usd = ((estimated_input_tokens + (len(all_txns) * 50)) / 1_000_000) * 0.20 # Mistral pricing
+    )
+    
+    # Save metrics to session state for the Snapshot tool
+    st.session_state.last_run_metrics = metrics.__dict__
+    
+    print(f"BENCKMARK: {metrics}") # Visible in terminal
 
-    # ✅ Final report (same as before)
     return FullStatementReport(
         account_info    = account_info,
         transactions    = all_txns,
@@ -462,21 +486,25 @@ def generate_pdf_report(
             legend=dict(orientation="h", yanchor="bottom", y=-0.42,
                         font=dict(size=9)),
         )
-        img_bytes = pio.to_image(fig_copy, format="png", width=800, height=380, scale=2)
-        chart_h   = CW * 0.48
-        img = Image(BytesIO(img_bytes), width=CW, height=chart_h)
-        # Wrap chart in a light card (drawn via Table with bg)
-        chart_card = Table([[img]], colWidths=[CW])
-        chart_card.setStyle(TableStyle([
-            ("BACKGROUND",    (0, 0), (-1, -1), _ROW_EVEN),
-            ("BOX",           (0, 0), (-1, -1), 0.8, _BORDER),
-            ("TOPPADDING",    (0, 0), (-1, -1), 8),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-            ("LEFTPADDING",   (0, 0), (-1, -1), 8),
-            ("RIGHTPADDING",  (0, 0), (-1, -1), 8),
-        ]))
-        story.append(chart_card)
-        story.append(sp(16))
+        try:
+            img_bytes = pio.to_image(fig_copy, format="png", width=800, height=380, scale=2)
+            chart_h   = CW * 0.48
+            img = Image(BytesIO(img_bytes), width=CW, height=chart_h)
+            # Wrap chart in a light card (drawn via Table with bg)
+            chart_card = Table([[img]], colWidths=[CW])
+            chart_card.setStyle(TableStyle([
+                ("BACKGROUND",    (0, 0), (-1, -1), _ROW_EVEN),
+                ("BOX",           (0, 0), (-1, -1), 0.8, _BORDER),
+                ("TOPPADDING",    (0, 0), (-1, -1), 8),
+                ("BOTTOMPADDING", (0,  0), (-1, -1), 8),
+                ("LEFTPADDING",   (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING",  (0, 0), (-1, -1), 8),
+            ]))
+            story.append(chart_card)
+            story.append(sp(16))
+        except Exception as e:
+            # Kaleido/Chrome not available on deployed platforms - skip chart in PDF
+            pass
 
     # ══════════════════════════════════════════════════════════════════════════
     # 6. AI SECURITY ALERTS
