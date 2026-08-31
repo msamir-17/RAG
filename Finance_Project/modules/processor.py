@@ -94,66 +94,64 @@ def extract_closing_balance(docs) -> float:
 
 
 # @st.cache_resource(show_spinner=False)
+
 def process_pdf_to_memory(pdf_path: str):
     try:
-        # 🔥 FIRST: Check if PDF is encrypted - decrypt if needed
-        try:
-            reader = PdfReader(pdf_path)
-            if reader.is_encrypted:
-                # Try to decrypt with empty password (common for PDFs)
-                if not reader.decrypt(""):
-                    return None, None, None, None, "ERROR: PDF requires password"
-        except Exception as decrypt_check_error:
-            print(f"Warning during encryption check: {decrypt_check_error}")
+        # 1. Encryption Check (Unchanged)
+        reader = PdfReader(pdf_path)
+        if reader.is_encrypted:
+            if not reader.decrypt(""):
+                return None, None, None, None, "ERROR: PDF requires password"
         
-        # Now load the PDF
-        try:
-            loader = PyPDFLoader(pdf_path)
-            docs = loader.load()
-        except Exception as load_error:
-            # Last resort: try to extract text directly with pypdf
-            try:
-                reader = PdfReader(pdf_path)
-                docs = []
-                for page_num, page in enumerate(reader.pages):
-                    text = page.extract_text()
-                    if text:
-                        docs.append(type('obj', (object,), {
-                            'page_content': text,
-                            'metadata': {'page': page_num}
-                        })())
-                if not docs:
-                    return None, None, None, None, "INVALID_PDF"
-            except Exception as fallback_error:
-                return None, None, None, None, f"ERROR: {str(load_error)}"
-
-        # 🔥 Validate immediately
+        # 2. Loading (Unchanged)
+        loader = PyPDFLoader(pdf_path)
+        docs = loader.load()
         if not docs or all(not d.page_content.strip() for d in docs):
             return None, None, None, None, "INVALID_PDF"
 
-        first_page_text = docs[0].page_content[:2500]
-        opening_balance = extract_opening_balance(docs)
-        closing_balance = extract_closing_balance(docs)
+        # 3. Metadata Enrichment (New Phase 2 Layer)
+        # We tag every page as a 'parent' so we can retrieve full context later
+        for i, doc in enumerate(docs):
+            page_content_hash = hashlib.md5(doc.page_content.encode()).hexdigest()[:12]
+            doc.metadata.update({
+                "parent_id": page_content_hash,
+                "page_num": i,
+                "chunk_type": "parent"
+            })
 
-        chunks = RecursiveCharacterTextSplitter(
-            chunk_size=3000, chunk_overlap=100
-        ).split_documents(docs)
+        # 4. Child Chunking (New Phase 2 Layer)
+        # Small chunks (400 chars) are better for finding exact words/amounts
+        child_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=400,
+            chunk_overlap=50
+        )
+        child_chunks = child_splitter.split_documents(docs)
+        for chunk in child_chunks:
+            chunk.metadata["chunk_type"] = "child"
 
-        # 🔥 Extra safety
-        if not chunks:
-            return None, None, None, None, "INVALID_PDF"
-
+        # 5. Combined Storage
+        # We store both the Full Page and the Snippets
+        all_elements = docs + child_chunks
+        
         embeddings = get_embedding_model()
         file_hash = get_file_hash(pdf_path)
 
         vector_db = Chroma.from_documents(
-            documents=chunks,
+            documents=all_elements,
             embedding=embeddings,
             collection_name=f"statement_{file_hash}"
         )
 
+        # 6. Extract Meta for UI (Unchanged)
+        first_page_text = docs[0].page_content[:2500]
+        opening_balance = extract_opening_balance(docs)
+        closing_balance = extract_closing_balance(docs)
+
+        print(f"DEBUG: Ingested {len(docs)} parents and {len(child_chunks)} children.")
         return vector_db, opening_balance, closing_balance, first_page_text, docs
     
     except Exception as e:
         print(f"❌ PDF Processing Error: {str(e)}")
         return None, None, None, None, f"ERROR: {str(e)}"
+
+    # Verification print

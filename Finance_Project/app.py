@@ -1,7 +1,7 @@
 import html
 import os
 import re
-
+from eval.snapshots import capture_eval_snapshot
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -456,6 +456,17 @@ elif current_page == "📊 Full Audit Report":
                 )
                 st.session_state.report = report
                 st.session_state.pop("anomalies_text", None)
+
+
+                capture_eval_snapshot(
+                    report, 
+                    st.session_state.db, 
+                    st.session_state.last_run_metrics
+                )
+
+
+
+
         except Exception as e:
             st.error(f"Error generating report: {e}")
             st.stop()
