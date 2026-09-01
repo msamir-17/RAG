@@ -39,18 +39,47 @@ class TransactionBatch(BaseModel):
 # ── LLM helpers ───────────────────────────────────────────────────────────────
 
 def get_finance_advice(user_query: str, vectorstore) -> str:
-    llm       = ChatMistralAI(model="mistral-small-2506")
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
-    template  = """You are a concise Financial Advisor. Answer based ONLY on context.
-Context: {context}
-Question: {question}
-Answer:"""
-    prompt = ChatPromptTemplate.from_template(template)
-    chain  = (
-        {"context": retriever, "question": RunnablePassthrough()}
-        | prompt | llm | StrOutputParser()
+    llm = ChatMistralAI(model="mistral-small-2506")
+    
+    # 1. Search for 'Child' chunks
+    child_hits = vectorstore.similarity_search(
+        user_query, 
+        k=5, 
+        filter={"chunk_type": "child"}
     )
-    return chain.invoke(user_query)
+    
+    # 2. Get unique Parent IDs
+    parent_ids = list(set([hit.metadata.get("parent_id") for hit in child_hits]))
+    
+    if not parent_ids:
+        return "I couldn't find any relevant data in the statement to answer that."
+
+    # 3. FIX: Use the $and operator for multiple filters
+    # Chroma requires this structure when combining conditions
+    where_filter = {
+        "$and": [
+            {"parent_id": {"$in": parent_ids}},
+            {"chunk_type": {"$eq": "parent"}}
+        ]
+    }
+    
+    parent_docs = vectorstore.get(where=where_filter)
+    
+    # 4. Combine full page text
+    context_text = "\n---\n".join(parent_docs['documents'])
+
+    # 5. Chain (Unchanged)
+    template = """You are a Senior Financial Auditor. 
+    Use the high-context page data below to answer the user query accurately. 
+    
+    Context: {context}
+    Question: {question}
+    Answer:"""
+    
+    prompt = ChatPromptTemplate.from_template(template)
+    chain = prompt | llm | StrOutputParser()
+    
+    return chain.invoke({"context": context_text, "question": user_query})
 
 
 def _batch_with_retry(batch_text, batch_llm, retries=2):

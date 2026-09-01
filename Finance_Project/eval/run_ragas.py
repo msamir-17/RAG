@@ -6,6 +6,7 @@ from ragas import evaluate
 from ragas.metrics import faithfulness, answer_relevancy
 from datasets import Dataset
 from langchain_mistralai import ChatMistralAI, MistralAIEmbeddings # Added Embeddings
+from ragas.metrics import faithfulness, answer_relevancy, context_recall, answer_correctness
 from dotenv import load_dotenv # Added to load API Keys
 
 load_dotenv() # Ensure MISTRAL_API_KEY is loaded
@@ -34,11 +35,11 @@ def run_eval(snapshot_path):
     
     # Pass 'embeddings' parameter to prevent OpenAI default error
     results = evaluate(
-        ds, 
-        metrics=[faithfulness, answer_relevancy], 
-        llm=model,
-        embeddings=embeddings
-    )
+    ds, 
+    metrics=[faithfulness, context_recall, answer_correctness], 
+    llm=model,
+    embeddings=embeddings
+)
     
     # Save Baseline
     results_df = results.to_pandas()
