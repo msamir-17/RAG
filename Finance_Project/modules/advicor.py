@@ -1,5 +1,6 @@
 import time
 import pandas as pd
+import asyncio
 import plotly.io as pio
 from io import BytesIO
 from typing import List, Optional
@@ -84,11 +85,12 @@ def get_finance_advice(user_query: str, vectorstore) -> str:
 
 def _batch_with_retry(batch_text, batch_llm, retries=2):
     system_msg = (
-        "You are extracting transactions from a bank statement. "
-        "ONLY extract rows that have a Serial Number (S.No), dates, and a monetary amount (debit/credit/balance). "
-        "DO NOT treat header text, footnotes, helpline numbers, PPF notes, or any non-transaction text as a transaction. "
-        "If a row does not look like a real financial transaction with an amount, SKIP it.\n\n"
-        "Text:\n" + batch_text
+        "You are an expert bank auditor. Extract every transaction row into JSON. "
+        "Each row MUST have: a date, a description, and at least one monetary value (debit, credit, or balance). "
+        "If a Serial Number (S.No) is missing, generate one starting from 1. "
+        "Fields: sl_no, txn_date, description, debit, credit, balance. "
+        "DO NOT extract headers, footers, or bank addresses as transactions.\n\n"
+        "Text to process:\n" + batch_text
     )
     for _ in range(retries):
         try:
@@ -103,8 +105,6 @@ def get_header_direct(first_page_text):
     structured_llm = llm.with_structured_output(AccountDetails)
     prompt = f"Extract identity details. Use EXACT values. Do not guess.\n\nText: {first_page_text}"
     return structured_llm.invoke(prompt)
-
-
 
 
 
@@ -138,20 +138,59 @@ class PerformanceMetrics:
     estimated_tokens: int
     cost_usd: float
 
+
+async def async_process_batch(batch_text, batch_llm, semaphore, retries=2):
+    """Processes one batch of transactions asynchronously with rate-limit safety."""
+    async with semaphore: # Only 3 batches at a time to avoid 429 errors
+        prompt = (
+            "Extract every transaction from the text below into JSON. "
+            "For each row, assign a category (Food, Travel, Shopping, Salary, etc.) "
+            f"based on the description.\n\nText:\n{batch_text}"
+        )
+        for attempt in range(retries):
+            try:
+                # Use .ainvoke for non-blocking parallel calls
+                res = await batch_llm.ainvoke(prompt)
+                if len(res.transactions) == 0 and len(batch_text) > 100:
+                    # Retry with a 'Strict' prompt
+                    strict_prompt = "CRITICAL: You missed the transactions. Extract every row now!" + prompt
+                    res = await batch_llm.ainvoke(strict_prompt)
+
+                return res.transactions
+            except Exception as e:
+                if "rate_limit" in str(e).lower() and attempt < retries - 1:
+                    await asyncio.sleep(2 ** attempt) # Async sleep doesn't freeze the app
+                else:
+                    return []
+    return []
+
+async def run_parallel_extraction(text_batches, batch_llm):
+    """Orchestrates multiple AI calls at once."""
+    semaphore = asyncio.Semaphore(3) # Bound concurrency to 3
+    tasks = [async_process_batch(batch, batch_llm, semaphore) for batch in text_batches]
+    results = await asyncio.gather(*tasks)
+    # Flatten the list of lists into one single list
+    return [item for sublist in results for item in sublist]
+
 def get_detailed_report(opening_balance, closing_balance, first_page_text, raw_docs):
-
-    start_time = time.perf_counter() # Start Timer
-
-    # ✅ Keep this (IMPORTANT)
+    start_time = time.perf_counter()
+    
+    # 1. Header Extraction (Fast, single call)
     account_info = get_header_direct(first_page_text)
-
-    # ✅ Prepare text
+    
+    # 2. Setup LLM for Transactions
+    llm = ChatMistralAI(model="mistral-small-2506", temperature=0)
+    batch_llm = llm.with_structured_output(TransactionBatch)
+    
+    # 3. Prepare Text Batches
     full_text = "\n".join([d.page_content for d in raw_docs])
-        # Log token estimate (Approx 1 token per 4 chars)
-    estimated_input_tokens = len(full_text) // 4 
+    text_batches = [full_text[i:i+6000] for i in range(0, len(full_text), 6000)]
 
-    # ✅ Use cached + parallel version
+    # 4. RUN ASYNC LOGIC
+    # We use asyncio.run to bridge our sync function to the async engine
     all_txns = _cached_transactions(full_text)
+    # all_txns = asyncio.run(run_parallel_extraction(text_batches, batch_llm))
+
     for t in all_txns:
         result = classify_transaction(
             narration = t.description,
@@ -160,31 +199,49 @@ def get_detailed_report(opening_balance, closing_balance, first_page_text, raw_d
         )
         t.category = result['category']
 
-    end_time = time.perf_counter()
-    duration = end_time - start_time
+    duration = time.perf_counter() - start_time
+    print(f"BENCHMARK: Processed {len(all_txns)} rows in {duration:.2f}s")
+
     
-    # Calculate Metrics
-    metrics = PerformanceMetrics(
-        latency_sec = duration,
-        throughput_rows_sec = len(all_txns) / duration if duration > 0 else 0,
-        estimated_tokens = estimated_input_tokens + (len(all_txns) * 50), # Input + JSON overhead
-        cost_usd = ((estimated_input_tokens + (len(all_txns) * 50)) / 1_000_000) * 0.20 # Mistral pricing
-    )
+    # Calculate Token Estimate & Cost
+    total_text_len = len(full_text)
+    est_tokens = (total_text_len // 4) + (len(all_txns) * 50)
     
-    # Save metrics to session state for the Snapshot tool
-    st.session_state.last_run_metrics = metrics.__dict__
+    metrics = {
+        "latency_sec": duration,
+        "throughput_rows_sec": len(all_txns) / duration if duration > 0 else 0,
+        "estimated_tokens": est_tokens,
+        "cost_usd": (est_tokens / 1_000_000) * 0.20
+    }
     
-    print(f"BENCKMARK: {metrics}") # Visible in terminal
+    # This line fixes the error
+    st.session_state.last_run_metrics = metrics
+    print(f"BENCHMARK: {metrics}")
 
     return FullStatementReport(
-        account_info    = account_info,
-        transactions    = all_txns,
-        total_debits    = sum(t.debit for t in all_txns),
-        total_credits   = sum(t.credit for t in all_txns),
-        opening_balance = opening_balance,
-        closing_balance = closing_balance,
+        account_info=account_info,
+        transactions=all_txns,
+        total_debits=sum(t.debit for t in all_txns),
+        total_credits=sum(t.credit for t in all_txns),
+        opening_balance=opening_balance,
+        closing_balance=closing_balance
     )
 
+def get_finance_advice_stream(user_query: str, vectorstore):
+    llm = ChatMistralAI(model="mistral-small-2506", streaming=True)
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+    
+    template = """You are a concise Financial Advisor. Answer based ONLY on context.
+    Context: {context}
+    Question: {question}
+    Answer:"""
+    prompt = ChatPromptTemplate.from_template(template)
+
+    chain = (
+        {"context": retriever, "question": RunnablePassthrough()}
+        | prompt | llm | StrOutputParser()
+    )
+    return chain.stream(user_query) # Returns a generator for Streamlit
 
 
 # ══════════════════════════════════════════════════════════════════════════════
