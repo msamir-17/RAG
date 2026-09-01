@@ -164,7 +164,7 @@ def txn_icon_color(category):
     return cmap.get(category, "purple")
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-TABS = ["💬 Chat Advisor", "📊 Full Audit Report", "🎯 Budget Planner", "🔮 Spending Forecast"]
+TABS = [" Chat Advisor", " Full Audit Report", " Budget Planner", " Spending Forecast"]
 CORE_CATS = ["Food & Dining", "Travel & Transport", "Shopping", "Utilities & Bills"]
 
 
@@ -399,7 +399,7 @@ current_page = TABS[st.session_state.active_tab]
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE 1 — CHAT ADVISOR
 # ══════════════════════════════════════════════════════════════════════════════
-if current_page == "💬 Chat Advisor":
+if current_page == " Chat Advisor":
     st.markdown("<h2 style='font-size: 24px; font-weight: 800; margin-bottom: 4px;'>💬 AI Financial Advisor</h2>", unsafe_allow_html=True)
     st.markdown("<p style='color: var(--text-muted); font-size: 14px; margin-bottom: 1.5rem;'>Ask anything about your transactions — typing or voice both work.</p>", unsafe_allow_html=True)
 
@@ -440,7 +440,7 @@ if current_page == "💬 Chat Advisor":
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE 2 — FULL AUDIT REPORT
 # ══════════════════════════════════════════════════════════════════════════════
-elif current_page == "📊 Full Audit Report":
+elif current_page == " Full Audit Report":
     st.markdown("<h2 style='font-size: 24px; font-weight: 800; margin-bottom: 4px;'>📊 Full Statement Analysis</h2>", unsafe_allow_html=True)
     st.markdown("<p style='color: var(--text-muted); font-size: 14px; margin-bottom: 1.5rem;'>Comprehensive audit of your transactions, balances, spending patterns, and AI-powered security alerts.</p>", unsafe_allow_html=True)
 
@@ -463,9 +463,6 @@ elif current_page == "📊 Full Audit Report":
                     st.session_state.db, 
                     st.session_state.last_run_metrics
                 )
-
-
-
 
         except Exception as e:
             st.error(f"Error generating report: {e}")
@@ -512,67 +509,92 @@ elif current_page == "📊 Full Audit Report":
 
         st.markdown("<div style='margin: 1.5rem 0;'></div>", unsafe_allow_html=True)
 
-        st.markdown("<h3 style='font-size: 17px; font-weight: 700; margin-bottom: 1rem;'>📑 Transaction History</h3>", unsafe_allow_html=True)
-        df_txn = pd.DataFrame([t.model_dump() for t in report.transactions])
-        st.dataframe(df_txn, use_container_width=True, height=320)
 
-        # Spending Breakdown + AI Alerts side by side
+
+        st.markdown("<h3 style='font-size: 17px; font-weight: 700; margin-bottom: 1rem;'>📑 Transaction History</h3>", unsafe_allow_html=True)
+        
+        # 1. Initialize df_txn safely
+        df_txn = pd.DataFrame()
+
+        if report.transactions:
+            # Convert the Pydantic models to a list of dicts
+            df_txn = pd.DataFrame([t.model_dump() for t in report.transactions])
+            st.dataframe(df_txn, use_container_width=True, height=300)
+        else:
+            st.error("❌ No transactions found. The AI might have skipped rows because of the table format.")
+
+        # 2. Spending Breakdown + AI Alerts side by side
         col_chart, col_alerts = st.columns([3, 2])
+        
         with col_chart:
             st.markdown("<h3 style='font-size: 17px; font-weight: 700; margin-bottom: 1rem;'>📊 Spending Breakdown</h3>", unsafe_allow_html=True)
-            spending_df = df_txn[df_txn["debit"] > 0].copy()
-            fig = None
-            if not spending_df.empty:
-                chart_data = spending_df.groupby("category")["debit"].sum().reset_index()
-                fig = px.pie(chart_data, values="debit", names="category",
-                             hole=0.55, color_discrete_sequence=_COLOR_PALETTE)
-                fig = update_plotly_layout(fig)
-                fig.update_layout(
-                    legend=dict(orientation="v", yanchor="middle", y=0.5, xanchor="left", x=-0.15, font=dict(size=11)),
-                    margin=dict(t=20, b=20, l=80, r=20),
-                    showlegend=True,
-                )
-                st.plotly_chart(fig, use_container_width=True)
+            
+            # Use .get() to avoid KeyError if 'debit' doesn't exist yet
+            if not df_txn.empty and "debit" in df_txn.columns:
+                spending_df = df_txn[df_txn["debit"] > 0].copy()
+                
+                if not spending_df.empty:
+                    chart_data = spending_df.groupby("category")["debit"].sum().reset_index()
+                    fig = px.pie(chart_data, values="debit", names="category",
+                                 hole=0.55, color_discrete_sequence=_COLOR_PALETTE)
+                    fig = update_plotly_layout(fig)
+                    fig.update_layout(
+                        legend=dict(orientation="v", yanchor="middle", y=0.5, xanchor="left", x=-0.15, font=dict(size=11)),
+                        margin=dict(t=20, b=20, l=80, r=20),
+                        showlegend=True,
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("No debit transactions found to visualize.")
             else:
-                st.markdown("""
-                <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:2rem;text-align:center;">
-                    <div style="width:48px;height:48px;border-radius:14px;background:var(--surface-2);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:20px;margin-bottom:12px;">📉</div>
-                    <div style="font-size:14px;font-weight:600;color:var(--text-secondary);margin-bottom:4px;">No Spending Data</div>
-                    <div style="font-size:12px;color:var(--text-muted);max-width:300px;line-height:1.5;">No debit transactions found in this statement to visualize.</div>
-                </div>
-                """, unsafe_allow_html=True)
+                st.warning("Debit column missing or Dataframe empty.")
 
         with col_alerts:
             st.markdown("<h3 style='font-size: 17px; font-weight: 700; margin-bottom: 1rem;'>🚩 AI Security Alerts</h3>", unsafe_allow_html=True)
             if "anomalies_text" not in st.session_state:
                 with st.spinner("Scanning for anomalies…"):
-                    st.session_state.anomalies_text = get_finance_advice(
-                        "List all suspicious, unusually large, or duplicate transactions "
-                        "as bullet points with dates and amounts.",
-                        st.session_state.db,
-                    )
-            render_ai_insight(st.session_state.anomalies_text)
+                    try:
+                        # Wrap the call to handle server load issues
+                        st.session_state.anomalies_text = get_finance_advice(
+                            "List all suspicious, unusually large, or duplicate transactions as bullet points.",
+                            st.session_state.db,
+                        )
+                    except Exception as e:
+                        # Friendly fallback instead of a crash
+                        st.session_state.anomalies_text = "⚠️ AI Advisor is currently busy. Please click 'Generate Report' again in a minute to see security alerts."
+            
+            st.warning(st.session_state.anomalies_text)
 
         st.markdown("<div style='margin: 1.5rem 0;'></div>", unsafe_allow_html=True)
 
+        # 3. PDF and Print Actions
         col_pdf, _ = st.columns([1, 3])
         with col_pdf:
-            try:
-                pdf_buf = generate_pdf_report(
-                    report, fig, st.session_state.get("anomalies_text")
-                )
-                st.download_button(
-                    "📥 Download Full Report PDF", pdf_buf,
-                    f"Report_{report.account_info.customer_name}.pdf",
-                    "application/pdf", use_container_width=True,
-                )
-            except Exception as pdf_err:
-                st.error(f"PDF error: {pdf_err}")
+            # We only show the button if 'fig' was successfully created above
+            if 'fig' in locals() and fig is not None:
+                try:
+                    pdf_buf = generate_pdf_report(
+                        report, fig, st.session_state.get("anomalies_text")
+                    )
+                    st.download_button(
+                        "📥 Download Full Report PDF", pdf_buf,
+                        f"Report_{report.account_info.customer_name}.pdf",
+                        "application/pdf", use_container_width=True,
+                    )
+                except Exception as pdf_err:
+                    st.error(f"PDF error: {pdf_err}")
+            else:
+                st.info("Chart required to generate PDF.")
+
+
+
+
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE 3 — BUDGET PLANNER
 # ══════════════════════════════════════════════════════════════════════════════
-elif current_page == "🎯 Budget Planner":
+elif current_page == " Budget Planner":
     st.markdown("<h2 style='font-size: 24px; font-weight: 800; margin-bottom: 4px;'>🎯 Smart Budget Planner</h2>", unsafe_allow_html=True)
     st.markdown("<p style='color: var(--text-muted); font-size: 14px; margin-bottom: 1.5rem;'>Set spending goals and track your progress by category.</p>", unsafe_allow_html=True)
 
@@ -709,8 +731,8 @@ elif current_page == "🎯 Budget Planner":
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE 4 — SPENDING FORECAST
 # ══════════════════════════════════════════════════════════════════════════════
-elif current_page == "🔮 Spending Forecast":
-    st.markdown("<h2 style='font-size: 24px; font-weight: 800; margin-bottom: 4px;'>🔮 AI Spending Forecast</h2>", unsafe_allow_html=True)
+elif current_page == " Spending Forecast":
+    st.markdown("<h2 style='font-size: 24px; font-weight: 800; margin-bottom: 4px;'> AI Spending Forecast</h2>", unsafe_allow_html=True)
     st.markdown("<p style='color: var(--text-muted); font-size: 14px; margin-bottom: 1.5rem;'>Predict future spending patterns based on your transaction history.</p>", unsafe_allow_html=True)
 
     if "report" in st.session_state:
