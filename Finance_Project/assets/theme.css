@@ -1,6 +1,8 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
-
 /* ===== DESIGN TOKENS ===== */
+/* FIX BUG 4: Google Fonts @import removed from here.
+   It is now injected as a non-blocking <link rel="preconnect"> in app.py inject_styles().
+   @import inside a <style> tag is render-blocking — browsers pause ALL rendering until
+   the Google Fonts server responds. Moving it to a <link> tag makes it non-blocking. */
 :root {
   --accent: #6366f1;
   --accent-hover: #4f46e5;
