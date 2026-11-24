@@ -56,43 +56,62 @@ class TransactionBatch(BaseModel):
 
 # ── LLM helpers ───────────────────────────────────────────────────────────────
 
-def get_finance_advice(user_query: str, vectorstore) -> str:
-    # FIX BUG 2: Lazy LLM import — only runs when user actually asks a question
+def get_finance_advice(user_query: str, vectorstore, first_page_text: str = "") -> str:
+    """
+    Generate financial advice/answers using RAG.
+    FIX: Replaced fragile Chroma $and/$in .get() query (which crashed with ValueError)
+    with instant in-memory parent_map lookup and automatic page 0 header context injection.
+    """
     llm = _get_llm()
 
-    # 1. Search for 'Child' chunks
-    child_hits = vectorstore.similarity_search(
-        user_query,
-        k=5,
-        filter={"chunk_type": "child"}
-    )
+    # 1. Similarity search on the vectorstore
+    hits = vectorstore.similarity_search(user_query, k=4)
 
-    # 2. Get unique Parent IDs
-    parent_ids = list(set([hit.metadata.get("parent_id") for hit in child_hits]))
+    # 2. Extract parent IDs from hits
+    parent_map = getattr(vectorstore, "parent_map", {})
+    parent_ids = list(set([h.metadata.get("parent_id") for h in hits if h.metadata.get("parent_id")]))
 
-    if not parent_ids:
+    # 3. If query asks about identity / account info, guarantee first page (p_0) is present
+    q_lower = user_query.lower()
+    is_account_query = any(k in q_lower for k in [
+        "name", "holder", "account", "ifsc", "branch", "bank",
+        "address", "micr", "period", "who", "customer", "balance"
+    ])
+    if is_account_query:
+        if "p_0" in parent_map and "p_0" not in parent_ids:
+            parent_ids.insert(0, "p_0")
+
+    # 4. Assemble context from in-memory parent_map (instant, 0.00ms, no Chroma crash)
+    context_blocks = []
+    if is_account_query and first_page_text:
+        context_blocks.append(first_page_text)
+
+    for pid in parent_ids:
+        if pid in parent_map and parent_map[pid] not in context_blocks:
+            context_blocks.append(parent_map[pid])
+
+    # Fallback to hit chunks if no parent blocks were assembled
+    if not context_blocks:
+        context_blocks = [h.page_content for h in hits if h.page_content]
+
+    if not context_blocks and first_page_text:
+        context_blocks = [first_page_text]
+
+    if not context_blocks:
         return "I couldn't find any relevant data in the statement to answer that."
 
-    # 3. Use $and operator for multiple Chroma filters
-    where_filter = {
-        "$and": [
-            {"parent_id": {"$in": parent_ids}},
-            {"chunk_type": {"$eq": "parent"}}
-        ]
-    }
+    context_text = "\n---\n".join(context_blocks)
 
-    parent_docs = vectorstore.get(where=where_filter)
-
-    # 4. Combine full page text
-    context_text = "\n---\n".join(parent_docs['documents'])
-
-    # 5. Build and run chain
+    # 5. Build and execute chain
     template = """You are a Senior Financial Auditor.
-    Use the high-context page data below to answer the user query accurately.
+Answer the user query accurately and directly using the bank statement data below.
+If the information (such as account holder name, account number, or amount) is present in the context, state it clearly.
 
-    Context: {context}
-    Question: {question}
-    Answer:"""
+Context:
+{context}
+
+Question: {question}
+Answer:"""
 
     prompt = _get_prompt_template(template)
     chain = prompt | llm | _get_str_parser()

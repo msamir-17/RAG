@@ -454,13 +454,17 @@ if current_page == " Chat Advisor":
                     """, unsafe_allow_html=True)
                     st.stop()
 
-                # FIX BUG 2: Lazy import — advicor only loads when user sends a message
-                from modules.advicor import get_finance_advice
-                response = get_finance_advice(prompt, st.session_state.db)
-                response = strip_html_tags(response)
-                st.markdown(response)
-
-        st.session_state.messages.append({"role": "assistant", "content": response})
+                try:
+                    from modules.advicor import get_finance_advice
+                    first_page = st.session_state.get("first_page_text", "")
+                    response = get_finance_advice(prompt, st.session_state.db, first_page)
+                    response = strip_html_tags(response)
+                    st.markdown(response)
+                    st.session_state.messages.append({"role": "assistant", "content": response})
+                except Exception as e:
+                    error_msg = f"⚠️ Could not generate answer: {str(e)}"
+                    st.error(error_msg)
+                    st.session_state.messages.append({"role": "assistant", "content": error_msg})
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE 2 — FULL AUDIT REPORT
