@@ -271,7 +271,7 @@ This will run live latency comparisons for PDF parsing, text chunking, regex cat
 
 ## 👤 Author & Acknowledgments
 
-- **Developed by:** Aamir
+- **Developed by:** Mohammad Samir Khan
 - **Inspiration:** Stripe Dashboard, CRED UI, Modern Financial Audit Systems
 
 *Contributions and feedback are welcome! Feel free to open an issue or submit a pull request.*
