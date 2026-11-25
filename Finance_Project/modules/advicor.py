@@ -33,7 +33,31 @@ from reportlab.platypus.flowables import Flowable
 def _get_llm(temperature: float = 0):
     """Return a ChatMistralAI instance. Lazily imports the package."""
     from langchain_mistralai import ChatMistralAI
-    return ChatMistralAI(model="mistral-small-2506", temperature=temperature)
+    return ChatMistralAI(model="mistral-small-2506", temperature=temperature, max_retries=2)
+
+
+def _is_rate_limit_error(err: Exception) -> bool:
+    s = str(err).lower()
+    return "429" in s or "rate limit" in s or "rate_limit" in s or "rate_limited" in s
+
+
+def _groq_fallback_chat(prompt_text: str, temperature: float = 0, json_mode: bool = False) -> str:
+    """Automatic fallback to Groq when Mistral hits 429 Rate Limit."""
+    from groq import Groq
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        raise RuntimeError("GROQ_API_KEY not found for 429 fallback.")
+    client = Groq(api_key=api_key)
+    kwargs = {
+        "model": "llama-3.3-70b-versatile",
+        "messages": [{"role": "user", "content": prompt_text}],
+        "temperature": temperature,
+    }
+    if json_mode:
+        kwargs["response_format"] = {"type": "json_object"}
+    resp = client.chat.completions.create(**kwargs)
+    return resp.choices[0].message.content or ""
+
 
 def _get_str_parser():
     from langchain_core.output_parsers import StrOutputParser
@@ -59,17 +83,14 @@ class TransactionBatch(BaseModel):
 def get_finance_advice(user_query: str, vectorstore, first_page_text: str = "") -> str:
     """
     Generate financial advice/answers using RAG.
-    FIX: Replaced fragile Chroma $and/$in .get() query (which crashed with ValueError)
-    with instant in-memory parent_map lookup and automatic page 0 header context injection.
+    Includes automatic Groq fallback on Mistral 429 Rate Limit and compact context assembly.
     """
-    llm = _get_llm()
-
     # 1. Similarity search on the vectorstore
     hits = vectorstore.similarity_search(user_query, k=4)
 
     # 2. Extract parent IDs from hits
     parent_map = getattr(vectorstore, "parent_map", {})
-    parent_ids = list(set([h.metadata.get("parent_id") for h in hits if h.metadata.get("parent_id")]))
+    parent_ids = list(dict.fromkeys([h.metadata.get("parent_id") for h in hits if h.metadata.get("parent_id")]))
 
     # 3. If query asks about identity / account info, guarantee first page (p_0) is present
     q_lower = user_query.lower()
@@ -80,6 +101,9 @@ def get_finance_advice(user_query: str, vectorstore, first_page_text: str = "") 
     if is_account_query:
         if "p_0" in parent_map and "p_0" not in parent_ids:
             parent_ids.insert(0, "p_0")
+        parent_ids = parent_ids[:2]
+    else:
+        parent_ids = parent_ids[:3]
 
     # 4. Assemble context from in-memory parent_map (instant, 0.00ms, no Chroma crash)
     context_blocks = []
@@ -100,9 +124,10 @@ def get_finance_advice(user_query: str, vectorstore, first_page_text: str = "") 
     if not context_blocks:
         return "I couldn't find any relevant data in the statement to answer that."
 
-    context_text = "\n---\n".join(context_blocks)
+    # Cap context size (~8000 chars) to stay well within free-tier TPM rate limits
+    context_text = "\n---\n".join(context_blocks)[:8000]
 
-    # 5. Build and execute chain
+    # 5. Build prompt
     template = """You are a Senior Financial Auditor.
 Answer the user query accurately and directly using the bank statement data below.
 If the information (such as account holder name, account number, or amount) is present in the context, state it clearly.
@@ -113,10 +138,18 @@ Context:
 Question: {question}
 Answer:"""
 
-    prompt = _get_prompt_template(template)
-    chain = prompt | llm | _get_str_parser()
+    formatted_prompt = template.format(context=context_text, question=user_query)
 
-    return chain.invoke({"context": context_text, "question": user_query})
+    # 6. Try Mistral first, automatically fall back to Groq on 429 rate limit
+    try:
+        llm = _get_llm()
+        prompt = _get_prompt_template(template)
+        chain = prompt | llm | _get_str_parser()
+        return chain.invoke({"context": context_text, "question": user_query})
+    except Exception as e:
+        if _is_rate_limit_error(e):
+            return _groq_fallback_chat(formatted_prompt, temperature=0)
+        raise
 
 
 
@@ -150,11 +183,22 @@ def _batch_with_retry(batch_text, batch_llm, retries=2):
 
 
 def get_header_direct(first_page_text):
-    # FIX BUG 2: Lazy LLM import
-    llm = _get_llm(temperature=0)
-    structured_llm = llm.with_structured_output(AccountDetails)
     prompt = f"Extract identity details. Use EXACT values. Do not guess.\n\nText: {first_page_text}"
-    return structured_llm.invoke(prompt)
+    try:
+        llm = _get_llm(temperature=0)
+        structured_llm = llm.with_structured_output(AccountDetails)
+        return structured_llm.invoke(prompt)
+    except Exception as e:
+        if _is_rate_limit_error(e):
+            json_prompt = (
+                "Extract account identity details as JSON matching keys: "
+                "customer_name, account_number, account_type, ifsc_code, micr_code, "
+                "branch_name, customer_address, branch_address, statement_period. "
+                "Use 'N/A' if missing.\n\nText: " + first_page_text
+            )
+            raw_json = _groq_fallback_chat(json_prompt, temperature=0, json_mode=True)
+            return AccountDetails.model_validate_json(raw_json)
+        raise
 
 
 
@@ -183,13 +227,13 @@ class PerformanceMetrics:
     cost_usd: float
 
 
-async def async_process_batch(batch_text, batch_llm, semaphore, retries=2):
-    """Processes larger batches with higher concurrency."""
+async def async_process_batch(batch_text, batch_llm, semaphore, retries=3):
+    """Processes batches with rate-limit-safe concurrency and Groq fallback."""
     async with semaphore:
         prompt = (
             "You are a high-precision Bank Auditor. Extract EVERY transaction. "
             "Handle SBI dates like '01-Jan-2024 (01-Jan-2024)'. "
-            "Fields: sl_no, txn_date, description, debit, credit, balance. "
+            "Fields: sl_no, txn_date, value_date, description, debit, credit, balance, category. "
             f"\n\nText:\n{batch_text}"
         )
         for attempt in range(retries):
@@ -197,15 +241,29 @@ async def async_process_batch(batch_text, batch_llm, semaphore, retries=2):
                 res = await batch_llm.ainvoke(prompt)
                 return res.transactions
             except Exception as e:
-                if "rate_limit" in str(e).lower() and attempt < retries - 1:
-                    await asyncio.sleep(1)
-                else:
-                    return []
+                if _is_rate_limit_error(e):
+                    if attempt < retries - 1:
+                        await asyncio.sleep(1.5 * (attempt + 1))
+                        continue
+                    # Fallback to Groq JSON extraction on persistent 429
+                    try:
+                        json_prompt = (
+                            "Extract all bank transactions as JSON: {\"transactions\": [{\"sl_no\": int, "
+                            "\"txn_date\": str, \"value_date\": str, \"description\": str, \"debit\": float, "
+                            "\"credit\": float, \"balance\": float, \"category\": \"Other\"}]}.\n\nText:\n"
+                            + batch_text
+                        )
+                        raw_json = await asyncio.to_thread(_groq_fallback_chat, json_prompt, 0, True)
+                        return TransactionBatch.model_validate_json(raw_json).transactions
+                    except Exception:
+                        return []
+                return []
     return []
 
 
 async def run_parallel_extraction(text_batches, batch_llm):
-    semaphore = asyncio.Semaphore(5)
+    # Concurrency 2 prevents tripping Mistral's 1 RPS free-tier rate limit
+    semaphore = asyncio.Semaphore(2)
     tasks = [async_process_batch(batch, batch_llm, semaphore) for batch in text_batches]
     results = await asyncio.gather(*tasks)
     return [item for sublist in results for item in sublist]
@@ -713,14 +771,23 @@ def calculate_forecast(transactions):
 
 
 def get_forecast_insights(monthly_data, prediction):
-    # FIX BUG 2: Lazy LLM import
-    llm = _get_llm(temperature=0)
-    structured_llm = llm.with_structured_output(ForecastInsight)
     prompt = (
         f"Analyze these monthly totals:\n{monthly_data.to_string()}\n"
         f"Prediction: ₹{prediction:,.2f}. Provide reasoning."
     )
-    return structured_llm.invoke(prompt)
+    try:
+        llm = _get_llm(temperature=0)
+        structured_llm = llm.with_structured_output(ForecastInsight)
+        return structured_llm.invoke(prompt)
+    except Exception as e:
+        if _is_rate_limit_error(e):
+            json_prompt = (
+                f"{prompt}\n\nReturn JSON with keys: "
+                "trend_analysis (str), risk_warnings (list of str), saving_tips (list of 3 str)."
+            )
+            raw_json = _groq_fallback_chat(json_prompt, temperature=0, json_mode=True)
+            return ForecastInsight.model_validate_json(raw_json)
+        raise
 
 
 def fast_intent(text: str):
