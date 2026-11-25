@@ -200,12 +200,12 @@ def route_intent(text: str) -> int:
 def parse_dates_flexible(series: pd.Series) -> pd.Series:
     """Try multiple date formats so budget data always loads correctly."""
     for fmt in ("%d-%m-%Y", "%d/%m/%Y", "%Y-%m-%d", "%d %b %Y", "%d-%b-%Y",
-                "%m-%d-%Y", "%m/%d/%Y"):
+                "%d %b %y", "%d-%b-%y", "%m-%d-%Y", "%m/%d/%Y"):
         try:
             return pd.to_datetime(series, format=fmt, errors="raise")
         except Exception:
             pass
-    return pd.to_datetime(series, infer_datetime_format=True, errors="coerce")
+    return pd.to_datetime(series, errors="coerce")
 
 
 # Apply voice navigation before sidebar renders (sync both active_tab and radio key)

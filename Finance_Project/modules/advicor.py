@@ -279,33 +279,45 @@ async def async_process_batch(batch_text, semaphore, retries=2):
     """Processes large statement batches via Gemini with Groq fallback."""
     async with semaphore:
         prompt = (
-            "You are a high-precision Bank Auditor. Extract EVERY transaction. "
-            "Handle SBI dates like '01-Jan-2024 (01-Jan-2024)'. "
-            "Fields: sl_no, txn_date, value_date, description, debit, credit, balance, category. "
-            f"\n\nText:\n{batch_text}"
+            "You are a high-precision Bank Auditor. Extract EVERY transaction row from this bank statement.\n"
+            "Rules:\n"
+            "1. Support any bank format (SBI, Standard Chartered, HDFC, ICICI, etc.).\n"
+            "2. 'Withdrawal' or 'Dr' = debit; 'Deposit' or 'Cr' = credit. Use 0.0 if blank.\n"
+            "3. If S.No is missing, assign sequential integers 1, 2, 3...\n"
+            "4. If a transaction row has no date printed because it is grouped under the previous date, "
+            "carry forward the previous row's txn_date and value_date.\n"
+            "5. Skip 'BALANCE FORWARD', 'OPENING BALANCE', and 'TOTAL' summary rows.\n"
+            "Fields: sl_no, txn_date, value_date, description, cheque_no, debit, credit, balance, category.\n\n"
+            f"Text:\n{batch_text}"
         )
+        last_err = None
         for attempt in range(retries):
             try:
                 res = await asyncio.to_thread(_gemini_generate, prompt, TransactionBatch, 0)
-                return res.transactions
+                if res and getattr(res, "transactions", None):
+                    return res.transactions
             except Exception as e:
-                if "429" in str(e).lower() or "quota" in str(e).lower():
-                    if attempt < retries - 1:
-                        await asyncio.sleep(1.5)
-                        continue
-                    if os.getenv("GROQ_API_KEY"):
-                        try:
-                            json_prompt = (
-                                "Extract all bank transactions as JSON: {\"transactions\": [{\"sl_no\": int, "
-                                "\"txn_date\": str, \"value_date\": str, \"description\": str, \"debit\": float, "
-                                "\"credit\": float, \"balance\": float, \"category\": \"Other\"}]}.\n\nText:\n"
-                                + batch_text
-                            )
-                            raw_json = await asyncio.to_thread(_groq_chat, json_prompt, 0, True)
-                            return TransactionBatch.model_validate_json(raw_json).transactions
-                        except Exception:
-                            return []
-                return []
+                last_err = e
+                if ("429" in str(e).lower() or "quota" in str(e).lower()) and attempt < retries - 1:
+                    await asyncio.sleep(1.5)
+                    continue
+
+        # Fallback to Groq JSON extraction if Gemini failed or returned empty
+        if os.getenv("GROQ_API_KEY"):
+            try:
+                json_prompt = (
+                    "Extract EVERY bank transaction as JSON: {\"transactions\": [{\"sl_no\": int, "
+                    "\"txn_date\": str, \"value_date\": str, \"description\": str, \"debit\": float, "
+                    "\"credit\": float, \"balance\": float, \"category\": \"Other\"}]}. "
+                    "Map Withdrawal->debit, Deposit->credit, carry forward missing dates, skip BALANCE FORWARD/TOTAL.\n\nText:\n"
+                    + batch_text
+                )
+                raw_json = await asyncio.to_thread(_groq_chat, json_prompt, 0, True)
+                return TransactionBatch.model_validate_json(raw_json).transactions
+            except Exception as ge:
+                last_err = ge
+        if last_err:
+            raise last_err
     return []
 
 
@@ -783,7 +795,7 @@ def calculate_forecast(transactions):
         return None, "Transaction data is incomplete. Please regenerate the Full Audit Report."
 
     parsed = pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns]")
-    for fmt in ("%d-%m-%Y", "%d/%m/%Y", "%Y-%m-%d", "%d %b %Y", "%d-%b-%Y", "%m-%d-%Y", "%m/%d/%Y"):
+    for fmt in ("%d-%m-%Y", "%d/%m/%Y", "%Y-%m-%d", "%d %b %Y", "%d-%b-%Y", "%d %b %y", "%d-%b-%y", "%m-%d-%Y", "%m/%d/%Y"):
         try:
             candidate = pd.to_datetime(df["txn_date"], format=fmt, errors="coerce")
             if candidate.notna().sum() > parsed.notna().sum():

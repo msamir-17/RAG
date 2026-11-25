@@ -100,7 +100,7 @@ def _split_text_fast(text: str, chunk_size: int = 800, chunk_overlap: int = 100)
 def extract_opening_balance(docs: list[Document]) -> float:
     full_text = " ".join([d.page_content for d in docs])
     pattern = re.search(
-        r'Opening\s+Balance[\s\S]{0,80}?([\d,]+\.?\d{0,2})',
+        r'(?:Opening\s+Balance|BALANCE\s+FORWARD)[\s\S]{0,80}?([\d,]+\.\d{2})',
         full_text, re.IGNORECASE
     )
     if pattern:
