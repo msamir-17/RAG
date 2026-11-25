@@ -3,7 +3,7 @@
 [![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://streamlit.io)
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-blue.svg)](https://www.python.org/)
 [![LangChain](https://img.shields.io/badge/LangChain-Core-green.svg)](https://www.langchain.com/)
-[![Mistral AI](https://img.shields.io/badge/MistralAI-mistral--small-red.svg)](https://mistral.ai/)
+[![Google Gemini](https://img.shields.io/badge/Google%20Gemini-2.5%20Flash-4285F4.svg)](https://aistudio.google.com/)
 [![Groq Whisper](https://img.shields.io/badge/Groq-Whisper--v3-orange.svg)](https://groq.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-purple.svg)](LICENSE)
 
@@ -33,7 +33,7 @@ An enterprise-grade **AI-powered personal finance intelligence platform** and ba
 
 ### 1. 💬 Conversational Financial RAG (Retrieval-Augmented Generation)
 - **Hierarchical Parent-Child Indexing:** Ingests statement pages as high-context *parent documents* and granular 400-character *child chunks*.
-- **ChromaDB Semantic Vector Search:** Retrieves precise numerical figures while feeding full context blocks to **Mistral AI (`mistral-small-2506`)** to eliminate financial hallucinations.
+- **ChromaDB Semantic Vector Search:** Retrieves precise numerical figures while feeding full context blocks to **Groq (`openai/gpt-oss-120b`) / Google Gemini (`gemini-2.5-flash`)** to eliminate financial hallucinations.
 
 ### 2. 📊 Automated Forensic Audit & Ledger Extraction
 - **Zero-Data-Loss Ledger Parsing:** Parses complex transaction descriptions, dates, debit/credit splits, running balances, and bank metadata (IFSC, Account Number, Branch).
@@ -78,9 +78,9 @@ flowchart TD
 
     subgraph LLM & Logic [Analysis & Reasoning Layer]
         ChromaMem --> QueryEngine[Context Assembler & Filter]
-        QueryEngine --> MistralLLM[ChatMistralAI: mistral-small-2506]
+        QueryEngine --> GeminiLLM[Google Gemini 2.5 Flash & Groq]
         NativePDF --> UPIEngine[Local UPI Regex Classifier: 0.07ms]
-        MistralLLM --> AuditReport[Structured Audit Ledger & PDF Builder]
+        GeminiLLM --> AuditReport[Structured Audit Ledger & PDF Builder]
         UPIEngine --> AuditReport
     end
 
@@ -170,7 +170,7 @@ All benchmarks measured on Python 3.12:
 ## 🛠️ Tech Stack
 
 - **Core & Runtime:** Python 3.12, Streamlit
-- **LLM & Inference:** Mistral AI (`mistral-small-2506`), LangChain Core
+- **LLM & Inference:** Google Gemini (`gemini-2.5-flash` via `google-genai`), Groq (`openai/gpt-oss-120b`), LangChain Core
 - **Audio Processing:** Groq API (`whisper-large-v3`)
 - **Vector Database & Embeddings:** ChromaDB, HuggingFace (`sentence-transformers/all-MiniLM-L6-v2`)
 - **Document Processing:** `pypdf`, ReportLab Platypus
@@ -234,7 +234,7 @@ pip install -r requirements.txt
 ### 4. Configure API Keys
 Create a `.env` file in the project root:
 ```env
-MISTRAL_API_KEY=your_mistral_api_key_here
+GEMINI_API_KEY=your_gemini_api_key_here
 GROQ_API_KEY=your_groq_api_key_here
 ```
 
@@ -250,7 +250,7 @@ Open [http://localhost:8501](http://localhost:8501) in your browser.
 
 | Variable | Description | Default |
 | :--- | :--- | :--- |
-| `MISTRAL_API_KEY` | Required for RAG chat and audit report generation | *None* |
+| `GEMINI_API_KEY` | Required for Full Audit Report extraction, forecast insights & fallback | *None* |
 | `GROQ_API_KEY` | Required for Whisper voice transcription | *None* |
 | `EVAL_MODE` | Set to `"true"` to log snapshots into `eval/snapshots/` | `false` |
 | `HF_HUB_OFFLINE` | Force offline HuggingFace embedding initialization | `1` |
