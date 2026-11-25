@@ -208,9 +208,11 @@ def parse_dates_flexible(series: pd.Series) -> pd.Series:
     return pd.to_datetime(series, infer_datetime_format=True, errors="coerce")
 
 
-# Apply voice navigation before sidebar renders
+# Apply voice navigation before sidebar renders (sync both active_tab and radio key)
 if st.session_state.get("voice_nav") is not None:
-    st.session_state.active_tab = st.session_state.voice_nav
+    nav_idx = st.session_state.voice_nav
+    st.session_state.active_tab = nav_idx
+    st.session_state.nav_radio  = TABS[nav_idx]
     st.session_state.voice_nav  = None
 
 # ── Header ────────────────────────────────────────────────────────────────────
@@ -358,12 +360,10 @@ with st.sidebar:
 
         st.divider()
         st.header("🗂️  Navigate")
-        selection = st.radio("Page", TABS, index=st.session_state.active_tab,
-                             label_visibility="collapsed")
-        clicked = TABS.index(selection)
-        if clicked != st.session_state.active_tab:
-            st.session_state.active_tab = clicked
-            st.rerun()
+        if "nav_radio" not in st.session_state or st.session_state.nav_radio not in TABS:
+            st.session_state.nav_radio = TABS[st.session_state.active_tab]
+        selection = st.radio("Page", TABS, key="nav_radio", label_visibility="collapsed")
+        st.session_state.active_tab = TABS.index(selection)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # VOICE PROCESSING
@@ -646,7 +646,14 @@ elif current_page == " Budget Planner":
 
     report = st.session_state.report
 
+    if not getattr(report, "transactions", None):
+        st.warning("⚠️ No transactions were extracted from this statement. Please go to **Full Audit Report** and regenerate the report first.")
+        st.stop()
+
     df = pd.DataFrame([t.model_dump() for t in report.transactions])
+    if "txn_date" not in df.columns:
+        st.warning("⚠️ Transaction date column missing. Please regenerate the Full Audit Report.")
+        st.stop()
     df["date_dt"]    = parse_dates_flexible(df["txn_date"])
     df["month_year"] = df["date_dt"].dt.strftime("%B %Y")
 

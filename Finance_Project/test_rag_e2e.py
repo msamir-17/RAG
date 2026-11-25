@@ -17,7 +17,7 @@ from modules.advicor import get_finance_advice, get_header_direct
 
 
 def main():
-    pdf_path = "data/statement.pdf" if os.path.exists("data/statement.pdf") else "data/temp_statement.pdf"
+    pdf_path = "data/temp_statement.pdf" if os.path.exists("data/temp_statement.pdf") else "statement.pdf"
     if not os.path.exists(pdf_path):
         print(f"ERROR: Sample PDF not found at {pdf_path}")
         return

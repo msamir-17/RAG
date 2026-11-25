@@ -82,9 +82,10 @@ def _pick_groq_chat_model(client) -> str:
     preferred = [
         "llama-3.1-8b-instant",
         "llama-3.3-70b-versatile",
+        "meta-llama/llama-4-scout-17b-16e-instruct",
         "qwen/qwen3-32b",
-        "openai/gpt-oss-120b",
         "openai/gpt-oss-20b",
+        "openai/gpt-oss-120b",
     ]
     try:
         available = [
@@ -124,7 +125,10 @@ def _groq_chat(prompt_text: str, temperature: float = 0, json_mode: bool = False
                 kwargs["response_format"] = {"type": "json_object"}
             resp = client.chat.completions.create(**kwargs)
             _CACHED_GROQ_MODEL = model_id
-            return resp.choices[0].message.content or ""
+            text = (resp.choices[0].message.content or "").strip()
+            if not text:
+                raise RuntimeError(f"Groq model {model_id} returned empty content.")
+            return text
         except Exception as e:
             err_str = str(e).lower()
             if ("404" in err_str or "model_not_found" in err_str or "does not exist" in err_str) and attempt == 0:
@@ -772,9 +776,21 @@ def generate_pdf_report(
 # ══════════════════════════════════════════════════════════════════════════════
 
 def calculate_forecast(transactions):
+    if not transactions:
+        return None, "No transactions found. Please generate the Full Audit Report first."
     df = pd.DataFrame([t.model_dump() for t in transactions])
-    # df["date_dt"] = pd.to_datetime(df["txn_date"], infer_datetime_format=True, errors="coerce")
-    df["date_dt"] = pd.to_datetime(df["txn_date"], format="%d-%m-%Y", errors="coerce")
+    if "txn_date" not in df.columns or "debit" not in df.columns:
+        return None, "Transaction data is incomplete. Please regenerate the Full Audit Report."
+
+    parsed = pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns]")
+    for fmt in ("%d-%m-%Y", "%d/%m/%Y", "%Y-%m-%d", "%d %b %Y", "%d-%b-%Y", "%m-%d-%Y", "%m/%d/%Y"):
+        try:
+            candidate = pd.to_datetime(df["txn_date"], format=fmt, errors="coerce")
+            if candidate.notna().sum() > parsed.notna().sum():
+                parsed = candidate
+        except Exception:
+            pass
+    df["date_dt"] = parsed
     monthly = (
         df[df["debit"] > 0]
         .groupby(df["date_dt"].dt.to_period("M"))["debit"]
