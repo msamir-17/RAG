@@ -1,4 +1,4 @@
-# 💰 FinSmart AI — Autonomous Financial Statement Auditor & Advisor
+# 💰 AI Financial Advisor — Autonomous Financial Statement Auditor & Advisor
 
 [![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://streamlit.io)
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-blue.svg)](https://www.python.org/)
