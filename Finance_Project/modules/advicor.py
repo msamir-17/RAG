@@ -25,51 +25,114 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from reportlab.platypus.flowables import Flowable
 
-# ── FIX BUG 2: Lazy-import LLM packages ─────────────────────────────────────
-# langchain_mistralai alone takes 3,183 ms to import.
-# We import it only when an LLM call is actually needed, not at module load time.
-# This drops advicor.py import cost from ~5,000ms to ~50ms.
+# ── Hybrid LLM Helpers: Google Gemini (Audit/Forecast) + Groq (Chat/Voice) ───
+# Lazy-imported so cold start stays < 500ms.
 
-def _get_llm(temperature: float = 0):
-    """Return a ChatMistralAI instance. Lazily imports the package."""
-    from langchain_mistralai import ChatMistralAI
-    return ChatMistralAI(model="mistral-small-2506", temperature=temperature, max_retries=2)
+_CACHED_GROQ_MODEL: Optional[str] = None
+_GEMINI_MODELS = ("gemini-2.5-flash", "gemini-2.0-flash")
 
 
-def _is_rate_limit_error(err: Exception) -> bool:
-    s = str(err).lower()
-    return "429" in s or "rate limit" in s or "rate_limit" in s or "rate_limited" in s
+def _get_gemini_client():
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY (or GOOGLE_API_KEY) not found in .env")
+    from google import genai
+    return genai.Client(api_key=api_key.strip())
 
 
-def _groq_fallback_chat(prompt_text: str, temperature: float = 0, json_mode: bool = False) -> str:
-    """Automatic fallback to Groq when Mistral hits 429 Rate Limit."""
+def _gemini_generate(prompt_text: str, schema=None, temperature: float = 0):
+    """Call Google Gemini with optional Pydantic structured output and model fallback."""
+    from google.genai import types
+    client = _get_gemini_client()
+
+    config_kwargs = {"temperature": temperature}
+    if schema is not None:
+        config_kwargs["response_mime_type"] = "application/json"
+        config_kwargs["response_schema"] = schema
+    config = types.GenerateContentConfig(**config_kwargs)
+
+    last_err = None
+    for model_name in _GEMINI_MODELS:
+        try:
+            resp = client.models.generate_content(
+                model=model_name,
+                contents=prompt_text,
+                config=config,
+            )
+            if schema is not None:
+                if getattr(resp, "parsed", None) is not None:
+                    return resp.parsed
+                return schema.model_validate_json(resp.text)
+            return resp.text or ""
+        except Exception as e:
+            last_err = e
+            err_s = str(e).lower()
+            if "404" in err_s or "not found" in err_s:
+                continue
+            raise
+    raise last_err
+
+
+def _pick_groq_chat_model(client) -> str:
+    """Dynamically pick an available text-generation model from the user's Groq account."""
+    global _CACHED_GROQ_MODEL
+    if _CACHED_GROQ_MODEL:
+        return _CACHED_GROQ_MODEL
+
+    preferred = [
+        "llama-3.1-8b-instant",
+        "llama-3.3-70b-versatile",
+        "qwen/qwen3-32b",
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
+    ]
+    try:
+        available = [
+            m.id for m in client.models.list().data
+            if not any(bad in m.id.lower() for bad in ["whisper", "guard", "tts", "playai", "distil-whisper"])
+        ]
+        for p in preferred:
+            if p in available:
+                _CACHED_GROQ_MODEL = p
+                return p
+        if available:
+            _CACHED_GROQ_MODEL = available[0]
+            return available[0]
+    except Exception:
+        pass
+    return "openai/gpt-oss-120b"
+
+
+def _groq_chat(prompt_text: str, temperature: float = 0, json_mode: bool = False) -> str:
+    """Call Groq chat completions with dynamic model resolution."""
+    global _CACHED_GROQ_MODEL
     from groq import Groq
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
-        raise RuntimeError("GROQ_API_KEY not found for 429 fallback.")
-    client = Groq(api_key=api_key)
-    kwargs = {
-        "model": "llama-3.3-70b-versatile",
-        "messages": [{"role": "user", "content": prompt_text}],
-        "temperature": temperature,
-    }
-    if json_mode:
-        kwargs["response_format"] = {"type": "json_object"}
-    resp = client.chat.completions.create(**kwargs)
-    return resp.choices[0].message.content or ""
+        raise RuntimeError("GROQ_API_KEY not found in .env")
+    client = Groq(api_key=api_key.strip())
 
-
-def _get_str_parser():
-    from langchain_core.output_parsers import StrOutputParser
-    return StrOutputParser()
-
-def _get_prompt_template(template: str):
-    from langchain_core.prompts import ChatPromptTemplate
-    return ChatPromptTemplate.from_template(template)
-
-def _get_messages(system: str, human: str):
-    from langchain_core.messages import SystemMessage, HumanMessage
-    return [SystemMessage(content=system), HumanMessage(content=human)]
+    model_id = _CACHED_GROQ_MODEL or _pick_groq_chat_model(client)
+    for attempt in range(2):
+        try:
+            kwargs = {
+                "model": model_id,
+                "messages": [{"role": "user", "content": prompt_text}],
+                "temperature": temperature,
+            }
+            if json_mode:
+                kwargs["response_format"] = {"type": "json_object"}
+            resp = client.chat.completions.create(**kwargs)
+            _CACHED_GROQ_MODEL = model_id
+            return resp.choices[0].message.content or ""
+        except Exception as e:
+            err_str = str(e).lower()
+            if ("404" in err_str or "model_not_found" in err_str or "does not exist" in err_str) and attempt == 0:
+                _CACHED_GROQ_MODEL = None
+                model_id = _pick_groq_chat_model(client)
+                continue
+            raise
+    return ""
 
 
 
@@ -127,7 +190,7 @@ def get_finance_advice(user_query: str, vectorstore, first_page_text: str = "") 
     # Cap context size (~8000 chars) to stay well within free-tier TPM rate limits
     context_text = "\n---\n".join(context_blocks)[:8000]
 
-    # 5. Build prompt
+    # 5. Build and run chain
     template = """You are a Senior Financial Auditor.
 Answer the user query accurately and directly using the bank statement data below.
 If the information (such as account holder name, account number, or amount) is present in the context, state it clearly.
@@ -138,82 +201,63 @@ Context:
 Question: {question}
 Answer:"""
 
+    # 5. Execute via Groq (fast real-time chat) with automatic Gemini fallback
     formatted_prompt = template.format(context=context_text, question=user_query)
-
-    # 6. Try Mistral first, automatically fall back to Groq on 429 rate limit
-    try:
-        llm = _get_llm()
-        prompt = _get_prompt_template(template)
-        chain = prompt | llm | _get_str_parser()
-        return chain.invoke({"context": context_text, "question": user_query})
-    except Exception as e:
-        if _is_rate_limit_error(e):
-            return _groq_fallback_chat(formatted_prompt, temperature=0)
-        raise
+    if os.getenv("GROQ_API_KEY"):
+        try:
+            return _groq_chat(formatted_prompt, temperature=0)
+        except Exception:
+            if os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"):
+                return _gemini_generate(formatted_prompt, temperature=0)
+            raise
+    return _gemini_generate(formatted_prompt, temperature=0)
 
 
 
-def _batch_with_retry(batch_text, batch_llm, retries=2):
-    # FIX BUG 8: Lazy-import SystemMessage/HumanMessage (part of LLM lazy load strategy)
-    from langchain_core.messages import SystemMessage, HumanMessage
-
-    system_instruction = (
+def _batch_with_retry(batch_text, retries=2):
+    prompt = (
         "You are a high-precision Bank Audit bot. Your task is to extract EVERY transaction row. "
         "SBI statements often have dates like '01-Jan-2024 (01-Jan-2024)' and no S.No. "
         "DO NOT SKIP THESE. Extract the first date, the description, and the amounts. "
-        "If a Debit or Credit is missing/blank, use 0.0. "
-        "Return ONLY valid JSON transactions."
+        "If a Debit or Credit is missing/blank, use 0.0.\n\n"
+        f"Text:\n{batch_text}"
     )
-
-    messages = [
-        SystemMessage(content=system_instruction),
-        HumanMessage(content=f"Extract transactions from this text block:\n\n{batch_text}")
-    ]
-
     for attempt in range(retries):
         try:
-            response = batch_llm.invoke(messages)
-            if response.transactions:
-                return response.transactions
+            res = _gemini_generate(prompt, schema=TransactionBatch, temperature=0)
+            if res and res.transactions:
+                return res.transactions
         except Exception as e:
             print(f"❌ Batch Error (attempt {attempt+1}): {e}")
             time.sleep(1)
-
     return []
 
 
 def get_header_direct(first_page_text):
     prompt = f"Extract identity details. Use EXACT values. Do not guess.\n\nText: {first_page_text}"
     try:
-        llm = _get_llm(temperature=0)
-        structured_llm = llm.with_structured_output(AccountDetails)
-        return structured_llm.invoke(prompt)
-    except Exception as e:
-        if _is_rate_limit_error(e):
+        return _gemini_generate(prompt, schema=AccountDetails, temperature=0)
+    except Exception:
+        if os.getenv("GROQ_API_KEY"):
             json_prompt = (
                 "Extract account identity details as JSON matching keys: "
                 "customer_name, account_number, account_type, ifsc_code, micr_code, "
                 "branch_name, customer_address, branch_address, statement_period. "
                 "Use 'N/A' if missing.\n\nText: " + first_page_text
             )
-            raw_json = _groq_fallback_chat(json_prompt, temperature=0, json_mode=True)
+            raw_json = _groq_chat(json_prompt, temperature=0, json_mode=True)
             return AccountDetails.model_validate_json(raw_json)
         raise
-
 
 
 @st.cache_data(show_spinner=False)
 def _cached_transactions(full_text: str):
     """Cache parsed transactions to avoid re-running LLM on same content."""
-    # FIX BUG 2: Lazy LLM import
-    llm = _get_llm(temperature=0)
-    batch_llm = llm.with_structured_output(TransactionBatch)
-
-    batches = [full_text[i:i+6000] for i in range(0, len(full_text), 6000)]
+    batches = [full_text[i:i+25000] for i in range(0, len(full_text), 25000)]
 
     all_txns = []
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        results = executor.map(lambda b: _batch_with_retry(b, batch_llm), batches)
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        results = executor.map(_batch_with_retry, batches)
     for res in results:
         all_txns.extend(res)
     return all_txns
@@ -227,8 +271,8 @@ class PerformanceMetrics:
     cost_usd: float
 
 
-async def async_process_batch(batch_text, batch_llm, semaphore, retries=3):
-    """Processes batches with rate-limit-safe concurrency and Groq fallback."""
+async def async_process_batch(batch_text, semaphore, retries=2):
+    """Processes large statement batches via Gemini with Groq fallback."""
     async with semaphore:
         prompt = (
             "You are a high-precision Bank Auditor. Extract EVERY transaction. "
@@ -238,33 +282,32 @@ async def async_process_batch(batch_text, batch_llm, semaphore, retries=3):
         )
         for attempt in range(retries):
             try:
-                res = await batch_llm.ainvoke(prompt)
+                res = await asyncio.to_thread(_gemini_generate, prompt, TransactionBatch, 0)
                 return res.transactions
             except Exception as e:
-                if _is_rate_limit_error(e):
+                if "429" in str(e).lower() or "quota" in str(e).lower():
                     if attempt < retries - 1:
-                        await asyncio.sleep(1.5 * (attempt + 1))
+                        await asyncio.sleep(1.5)
                         continue
-                    # Fallback to Groq JSON extraction on persistent 429
-                    try:
-                        json_prompt = (
-                            "Extract all bank transactions as JSON: {\"transactions\": [{\"sl_no\": int, "
-                            "\"txn_date\": str, \"value_date\": str, \"description\": str, \"debit\": float, "
-                            "\"credit\": float, \"balance\": float, \"category\": \"Other\"}]}.\n\nText:\n"
-                            + batch_text
-                        )
-                        raw_json = await asyncio.to_thread(_groq_fallback_chat, json_prompt, 0, True)
-                        return TransactionBatch.model_validate_json(raw_json).transactions
-                    except Exception:
-                        return []
+                    if os.getenv("GROQ_API_KEY"):
+                        try:
+                            json_prompt = (
+                                "Extract all bank transactions as JSON: {\"transactions\": [{\"sl_no\": int, "
+                                "\"txn_date\": str, \"value_date\": str, \"description\": str, \"debit\": float, "
+                                "\"credit\": float, \"balance\": float, \"category\": \"Other\"}]}.\n\nText:\n"
+                                + batch_text
+                            )
+                            raw_json = await asyncio.to_thread(_groq_chat, json_prompt, 0, True)
+                            return TransactionBatch.model_validate_json(raw_json).transactions
+                        except Exception:
+                            return []
                 return []
     return []
 
 
-async def run_parallel_extraction(text_batches, batch_llm):
-    # Concurrency 2 prevents tripping Mistral's 1 RPS free-tier rate limit
-    semaphore = asyncio.Semaphore(2)
-    tasks = [async_process_batch(batch, batch_llm, semaphore) for batch in text_batches]
+async def run_parallel_extraction(text_batches):
+    semaphore = asyncio.Semaphore(3)
+    tasks = [async_process_batch(batch, semaphore) for batch in text_batches]
     results = await asyncio.gather(*tasks)
     return [item for sublist in results for item in sublist]
 
@@ -272,18 +315,14 @@ async def run_parallel_extraction(text_batches, batch_llm):
 def get_detailed_report(opening_balance, closing_balance, first_page_text, raw_docs):
     start_time = time.perf_counter()
 
-    # FIX BUG 2: Lazy LLM imports — both calls trigger load only when this function runs
     account_info = get_header_direct(first_page_text)
-
-    llm = _get_llm(temperature=0)
-    batch_llm = llm.with_structured_output(TransactionBatch)
 
     full_text = "\n".join([d.page_content for d in raw_docs])
 
-    # Batch size 8,000 chars (fewer total API calls)
-    text_batches = [full_text[i:i+8000] for i in range(0, len(full_text), 8000)]
+    # Gemini's 1M context handles 25,000-char batches cleanly -> fewer total API calls
+    text_batches = [full_text[i:i+25000] for i in range(0, len(full_text), 25000)]
 
-    all_txns = asyncio.run(run_parallel_extraction(text_batches, batch_llm))
+    all_txns = asyncio.run(run_parallel_extraction(text_batches))
 
     # FIX BUG 8: Use local classify_transaction instead of LLM for categories
     # This is 0.1ms per transaction vs ~200ms per transaction via LLM
@@ -318,25 +357,8 @@ def get_detailed_report(opening_balance, closing_balance, first_page_text, raw_d
 
 
 def get_finance_advice_stream(user_query: str, vectorstore):
-    # FIX BUG 2: Lazy LLM imports
-    from langchain_core.runnables import RunnablePassthrough
-    llm = _get_llm(temperature=0)
-    # Enable streaming
-    from langchain_mistralai import ChatMistralAI
-    llm = ChatMistralAI(model="mistral-small-2506", streaming=True)
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
-
-    template = """You are a concise Financial Advisor. Answer based ONLY on context.
-    Context: {context}
-    Question: {question}
-    Answer:"""
-    prompt = _get_prompt_template(template)
-
-    chain = (
-        {"context": retriever, "question": RunnablePassthrough()}
-        | prompt | llm | _get_str_parser()
-    )
-    return chain.stream(user_query)
+    """Yield advice response using RAG (Groq primary, Gemini fallback)."""
+    yield get_finance_advice(user_query, vectorstore)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -776,16 +798,14 @@ def get_forecast_insights(monthly_data, prediction):
         f"Prediction: ₹{prediction:,.2f}. Provide reasoning."
     )
     try:
-        llm = _get_llm(temperature=0)
-        structured_llm = llm.with_structured_output(ForecastInsight)
-        return structured_llm.invoke(prompt)
-    except Exception as e:
-        if _is_rate_limit_error(e):
+        return _gemini_generate(prompt, schema=ForecastInsight, temperature=0)
+    except Exception:
+        if os.getenv("GROQ_API_KEY"):
             json_prompt = (
                 f"{prompt}\n\nReturn JSON with keys: "
                 "trend_analysis (str), risk_warnings (list of str), saving_tips (list of 3 str)."
             )
-            raw_json = _groq_fallback_chat(json_prompt, temperature=0, json_mode=True)
+            raw_json = _groq_chat(json_prompt, temperature=0, json_mode=True)
             return ForecastInsight.model_validate_json(raw_json)
         raise
 

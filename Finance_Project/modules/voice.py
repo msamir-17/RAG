@@ -44,15 +44,9 @@ def transcribe_audio(audio_bytes: bytes) -> str | None:
 
 
 def classify_intent(transcript: str):
-    """
-    FIX BUG 2: langchain_mistralai imported lazily — only when needed.
-    langchain_mistralai import cost = 3,183 ms. Lazy import = 0 ms on cold start.
-    """
-    from langchain_mistralai import ChatMistralAI   # Lazy import
+    """Uses Groq to classify spoken intent into chat, audit, budget, forecast, or navigate."""
     from modules.schema import IntentResponse
-
-    llm = ChatMistralAI(model="mistral-small-2506", temperature=0)
-    structured_llm = llm.with_structured_output(IntentResponse)
+    from modules.advicor import _groq_chat
 
     system_prompt = """You are an intent classifier for a finance app.
     Classify the query into: chat, audit, budget, forecast, or navigate.
@@ -61,12 +55,13 @@ def classify_intent(transcript: str):
     - 'budget': Wants to set/see goals.
     - 'forecast': Wants to see future predictions.
     - 'navigate': Switching pages without a specific question.
+    Return JSON with keys: intent, confidence (float), rephrased (str).
     """
 
     try:
-        return structured_llm.invoke(f"{system_prompt}\n\nQuery: {transcript}")
+        raw_json = _groq_chat(f"{system_prompt}\n\nQuery: {transcript}", temperature=0, json_mode=True)
+        return IntentResponse.model_validate_json(raw_json)
     except Exception:
-        from modules.schema import IntentResponse
         return IntentResponse(intent="chat", confidence=0.5, rephrased=transcript)
 
 
