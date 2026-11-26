@@ -11,13 +11,21 @@ CATEGORY_OPTIONS = (
 
 class Transaction(BaseModel):
     sl_no: int = Field(description="The Serial Number (S.No) of the transaction")
-    txn_date: str = Field(description="Transaction Date")
-    value_date: str = Field(description="Value Date")
+    txn_date: str = Field(description="Transaction Date — MUST be in ISO format YYYY-MM-DD (e.g. 2024-03-15)")
+    value_date: str = Field(description="Value Date — MUST be in ISO format YYYY-MM-DD")
     description: str = Field(description="Complete description of the transaction")
     cheque_no: Optional[str] = Field(None, description="Cheque or Reference Number if present")
-    debit: float = Field(default=0.0, description="Amount debited (money going OUT). Use 0 if not a debit.")
-    credit: float = Field(default=0.0, description="Amount credited (money coming IN). Use 0 if not a credit.")
-    balance: float = Field(description="Running balance after this transaction")
+    debit: float = Field(default=0.0, description="Amount debited (money going OUT). Strip currency symbols. Use 0 if not a debit.")
+    credit: float = Field(default=0.0, description="Amount credited (money coming IN). Strip currency symbols. Use 0 if not a credit.")
+    balance: float = Field(description="Running balance after this transaction. Strip currency symbols.")
+    currency_code: str = Field(
+        default="INR",
+        description=(
+            "ISO 4217 currency code detected from the statement. "
+            "Examples: INR for ₹/Rs/Indian Rupee, USD for $, EUR for €, GBP for £, AED for Dirham, SGD for S$. "
+            "Default to INR if unclear."
+        )
+    )
     category: str = Field(
         description=(
             f"Assign ONE category from this list only: {CATEGORY_OPTIONS}. "

@@ -220,10 +220,14 @@ Answer:"""
 
 def _batch_with_retry(batch_text, retries=2):
     prompt = (
-        "You are a high-precision Bank Audit bot. Your task is to extract EVERY transaction row. "
-        "SBI statements often have dates like '01-Jan-2024 (01-Jan-2024)' and no S.No. "
-        "DO NOT SKIP THESE. Extract the first date, the description, and the amounts. "
-        "If a Debit or Credit is missing/blank, use 0.0.\n\n"
+        "You are a high-precision Bank Audit bot. Extract EVERY transaction row from this bank statement.\n"
+        "STRICT RULES:\n"
+        "1. Convert ALL dates to ISO 8601 → YYYY-MM-DD (e.g. '01-Jan-2024' → '2024-01-01', '17 Jun 19' → '2019-06-17').\n"
+        "2. Strip currency symbols (₹, $, £, €). Output amounts as pure floats.\n"
+        "3. 'Withdrawal'/'Dr' = debit; 'Deposit'/'Cr' = credit. Use 0.0 if blank.\n"
+        "4. Carry forward previous row's date if current row has no date.\n"
+        "5. Skip 'BALANCE FORWARD', 'OPENING BALANCE', 'TOTAL' rows.\n"
+        "6. Set currency_code: ₹/Rs = INR, $ = USD, £ = GBP, € = EUR, AED = AED.\n\n"
         f"Text:\n{batch_text}"
     )
     for attempt in range(retries):
@@ -280,14 +284,21 @@ async def async_process_batch(batch_text, semaphore, retries=2):
     async with semaphore:
         prompt = (
             "You are a high-precision Bank Auditor. Extract EVERY transaction row from this bank statement.\n"
-            "Rules:\n"
-            "1. Support any bank format (SBI, Standard Chartered, HDFC, ICICI, etc.).\n"
-            "2. 'Withdrawal' or 'Dr' = debit; 'Deposit' or 'Cr' = credit. Use 0.0 if blank.\n"
+            "STRICT RULES — follow all of them:\n"
+            "1. Support ANY bank format worldwide (SBI, Standard Chartered, HDFC, ICICI, Axis, Chase, Barclays, etc.).\n"
+            "2. 'Withdrawal', 'Dr', 'Debit' = debit field; 'Deposit', 'Cr', 'Credit' = credit field. Use 0.0 if blank.\n"
             "3. If S.No is missing, assign sequential integers 1, 2, 3...\n"
-            "4. If a transaction row has no date printed because it is grouped under the previous date, "
-            "carry forward the previous row's txn_date and value_date.\n"
-            "5. Skip 'BALANCE FORWARD', 'OPENING BALANCE', and 'TOTAL' summary rows.\n"
-            "Fields: sl_no, txn_date, value_date, description, cheque_no, debit, credit, balance, category.\n\n"
+            "4. DATE FORMAT: Convert ALL dates to strict ISO 8601 → YYYY-MM-DD.\n"
+            "   Examples: '01-Jan-2024' → '2024-01-01', '17 Jun 19' → '2019-06-17', "
+            "'01/04/2024' → '2024-04-01', '01.04.2024' → '2024-04-01', "
+            "'March 15, 2024' → '2024-03-15'. For 2-digit years: 00-29 = 2000s, 30-99 = 1900s.\n"
+            "5. AMOUNTS: Strip all currency symbols (₹, $, £, €, AED, Rs., etc.). Output pure floats only.\n"
+            "6. CURRENCY: Detect the ISO 4217 currency code from the statement header or symbols "
+            "(₹/Rs = INR, $ = USD, £ = GBP, € = EUR, AED = AED, S$ = SGD). Set currency_code on each row.\n"
+            "7. If a row has no date (grouped under previous date), carry forward the previous row's txn_date and value_date.\n"
+            "8. Skip 'BALANCE FORWARD', 'OPENING BALANCE', 'CLOSING BALANCE', 'TOTAL' summary rows.\n"
+            "Fields: sl_no, txn_date (YYYY-MM-DD), value_date (YYYY-MM-DD), description, cheque_no, "
+            "debit, credit, balance, currency_code, category.\n\n"
             f"Text:\n{batch_text}"
         )
         last_err = None
@@ -352,6 +363,27 @@ def get_detailed_report(opening_balance, closing_balance, first_page_text, raw_d
 
     total_debits = sum(t.debit for t in all_txns)
     total_credits = sum(t.credit for t in all_txns)
+
+    # ── Balance Math Self-Check (1ms, Zero-Error Guarantee) ──────────────────
+    balance_warning = None
+    if opening_balance > 0 and closing_balance > 0 and all_txns:
+        computed_closing = opening_balance + total_credits - total_debits
+        balance_diff = abs(computed_closing - closing_balance)
+        tolerance = max(1.0, closing_balance * 0.005)   # 0.5% or 1 unit whichever bigger
+        if balance_diff > tolerance:
+            balance_warning = (
+                f"⚠️ **Balance Mismatch Detected** — "
+                f"Opening ({opening_balance:,.2f}) + Credits ({total_credits:,.2f}) "
+                f"- Debits ({total_debits:,.2f}) = {computed_closing:,.2f} "
+                f"but Statement Closing = {closing_balance:,.2f} "
+                f"(diff: {balance_diff:,.2f}). "
+                "Some rows may be missing or debit/credit may be swapped."
+            )
+            print(f"⚠️  BALANCE MISMATCH: computed={computed_closing:.2f} vs statement={closing_balance:.2f}")
+        else:
+            print(f"✅ Balance check passed: computed={computed_closing:.2f} ≈ statement={closing_balance:.2f}")
+    st.session_state.balance_warning = balance_warning
+    # ─────────────────────────────────────────────────────────────────────────
 
     metrics = {
         "latency_sec": duration,

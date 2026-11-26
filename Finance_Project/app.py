@@ -198,8 +198,13 @@ def route_intent(text: str) -> int:
 
 
 def parse_dates_flexible(series: pd.Series) -> pd.Series:
-    """Try multiple date formats so budget data always loads correctly."""
-    for fmt in ("%d-%m-%Y", "%d/%m/%Y", "%Y-%m-%d", "%d %b %Y", "%d-%b-%Y",
+    """
+    Parse dates from transaction data.
+    ISO YYYY-MM-DD is tried first (new extraction outputs this format).
+    Legacy formats retained as fallback for older cached data.
+    """
+    # ISO first — extraction prompt now outputs YYYY-MM-DD always
+    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%d %b %Y", "%d-%b-%Y",
                 "%d %b %y", "%d-%b-%y", "%m-%d-%Y", "%m/%d/%Y"):
         try:
             return pd.to_datetime(series, format=fmt, errors="raise")
@@ -505,6 +510,12 @@ elif current_page == " Full Audit Report":
 
     if "report" in st.session_state:
         report = st.session_state.report
+
+        # ── Balance Mismatch Warning (auto math self-check result) ────────────
+        bw = st.session_state.get("balance_warning")
+        if bw:
+            st.warning(bw)
+        # ─────────────────────────────────────────────────────────────────────
 
         # Account Info Cards
         st.markdown("<div style='margin-bottom: 1.5rem;'></div>", unsafe_allow_html=True)

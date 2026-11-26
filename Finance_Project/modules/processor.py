@@ -35,10 +35,61 @@ def get_file_hash(pdf_path: str) -> str:
         return hashlib.md5(f.read()).hexdigest()
 
 
+def _vision_ocr_fallback(pdf_path: str) -> list[Document]:
+    """
+    Multimodal Vision Fallback: If pypdf returns near-empty text (scanned/image PDF),
+    send the PDF bytes directly to Gemini Vision to OCR and extract the text.
+    Returns a list of Documents (one per page, best-effort).
+    """
+    try:
+        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            return []
+
+        from google import genai
+        from google.genai import types
+
+        client = genai.Client(api_key=api_key.strip())
+
+        with open(pdf_path, "rb") as f:
+            pdf_bytes = f.read()
+
+        # Upload PDF as inline bytes for Gemini Vision
+        prompt = (
+            "This is a scanned bank statement PDF. "
+            "Extract ALL text exactly as it appears, preserving table structure with spaces. "
+            "Include every row: dates, descriptions, amounts, and balances. "
+            "Output raw text only — no commentary."
+        )
+
+        resp = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[
+                types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf"),
+                prompt,
+            ],
+            config=types.GenerateContentConfig(temperature=0),
+        )
+        extracted_text = (resp.text or "").strip()
+        if not extracted_text:
+            return []
+
+        # Treat as a single-page document (Gemini sees full PDF)
+        return [Document(
+            page_content=extracted_text,
+            metadata={"page": 0, "source": pdf_path, "parent_id": "p_0", "ocr": True}
+        )]
+
+    except Exception as e:
+        print(f"⚠️  Vision OCR fallback failed: {e}")
+        return []
+
+
 def _load_pdf_pages(pdf_path: str) -> list[Document]:
     """
     Use native pypdf.PdfReader instead of langchain_community.PyPDFLoader.
     Extracts 27 pages in ~300ms.
+    If extracted text is near-empty (scanned PDF), returns empty list to trigger Vision fallback.
     """
     reader = PdfReader(pdf_path)
     docs = []
@@ -181,7 +232,18 @@ def process_pdf_to_memory(pdf_path: str):
 
         # 2. Load pages using FAST native pypdf
         docs = _load_pdf_pages(pdf_path)
-        if not docs or all(not d.page_content.strip() for d in docs):
+
+        # ── Vision Fallback: if pypdf text is near-empty (scanned/image PDF) ──
+        total_text = "".join(d.page_content for d in docs).strip()
+        if len(total_text) < 200:  # < 200 chars = almost certainly a scanned PDF
+            print("⚠️  pypdf returned near-empty text — trying Gemini Vision OCR fallback...")
+            vision_docs = _vision_ocr_fallback(pdf_path)
+            if vision_docs:
+                docs = vision_docs
+                print(f"✅ Vision OCR extracted {len(docs)} page(s) of text.")
+            else:
+                return None, None, None, None, "INVALID_PDF"
+        elif not docs or all(not d.page_content.strip() for d in docs):
             return None, None, None, None, "INVALID_PDF"
 
         # 3. Build parent map (maps p_0, p_1... to full page text)
